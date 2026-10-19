@@ -28,6 +28,7 @@ def get_persistent_data_dir() -> Path:
     return BASE_DIR
 
 ADMIN_SETTINGS_FILE = get_persistent_data_dir() / "admin_settings.json"
+AUDIT_LEDGER_FILE = get_persistent_data_dir() / "audit_ledger.jsonl"
 
 DEFAULT_SUPER_ADMIN = 8327850869
 DEFAULT_SUPER_ADMINS: Set[int] = {8327850869}
@@ -613,7 +614,7 @@ class AdminManager:
         if self.is_super_admin(uid):
             return 999999
         if self.is_admin(uid):
-            return 999999
+            return self.get_admin_remaining_daily_tokens(uid)
         self.check_and_refresh_admin_quotas()
         with self._lock:
             uid_str = str(uid)
@@ -628,7 +629,8 @@ class AdminManager:
         if self.is_super_admin(uid):
             return "👑 Unlimited (Owner / Super Admin)"
         if self.is_admin(uid):
-            return "🛡️ Unlimited (Admin)"
+            rem = self.get_admin_remaining_daily_tokens(uid)
+            return f"🛡️ {rem:,} / {ADMIN_DAILY_LIMIT:,} (Daily Admin Quota)"
         tokens = self.get_tokens(uid)
         if self.is_free_mode():
             return f"{tokens:,} Token{'s' if tokens != 1 else ''} <i>(🆓 Free Mode)</i>"
@@ -638,13 +640,15 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return False
-        if self.is_super_admin(uid) or self.is_admin(uid):
+        if self.is_super_admin(uid):
             return True
+        if self.is_admin(uid):
+            return self.get_admin_remaining_daily_tokens(uid) >= amount
         if self.is_free_mode():
             return True
         return self.get_tokens(uid) >= amount
 
-    def add_tokens(self, user_id: Any, amount: int) -> int:
+    def add_tokens(self, user_id: Any, amount: int, reason: str = "") -> int:
         uid = self._to_int(user_id)
         if not uid:
             return 0
@@ -661,23 +665,45 @@ class AdminManager:
                     rec["used"] = max(0, rec.get("used", 0) - amount)
                     self.admin_daily_usage[uid_str] = rec
             self.save()
+
+            self.log_ledger_event(
+                user_id=uid,
+                action="TOKEN_ADD",
+                change=+amount,
+                tokens_after=new_val,
+                reason=reason or "Tokens added"
+            )
             return new_val
 
-    def deduct_tokens(self, user_id: Any, amount: int = 1, force: bool = False) -> int:
+    def deduct_tokens(self, user_id: Any, amount: int = 1, force: bool = False, reason: str = "") -> int:
         uid = self._to_int(user_id)
         if not uid:
             return 0
-        if (self.is_super_admin(uid) or self.is_admin(uid)) and not force:
+        if self.is_super_admin(uid) and not force:
+            self.log_ledger_event(
+                user_id=uid,
+                action="FEATURE_EXEC",
+                change=0,
+                tokens_after=999999,
+                reason=reason or "Owner Execution (Unlimited)"
+            )
             return 999999
         if self.is_free_mode() and not force:
-            return self.get_tokens(uid)
+            tok = self.get_tokens(uid)
+            self.log_ledger_event(
+                user_id=uid,
+                action="FREE_MODE_EXEC",
+                change=0,
+                tokens_after=tok,
+                reason=reason or "Free Mode Execution"
+            )
+            return tok
+
         with self._lock:
             uid_str = str(uid)
             if uid_str not in self.user_registry:
                 self.record_user(uid)
-            current = int(self.user_registry[uid_str].get("tokens", 0))
-            new_val = max(0, current - amount)
-            self.user_registry[uid_str]["tokens"] = new_val
+
             if uid in self.admin_user_ids and not self.is_super_admin(uid):
                 today_str = get_current_ist_date()
                 rec = self.admin_daily_usage.get(uid_str, {})
@@ -687,10 +713,25 @@ class AdminManager:
                 if "last_reset" not in rec:
                     rec["last_reset"] = time.time()
                 self.admin_daily_usage[uid_str] = rec
+                new_val = max(0, ADMIN_DAILY_LIMIT - rec["used"])
+                self.user_registry[uid_str]["tokens"] = new_val
+            else:
+                current = int(self.user_registry[uid_str].get("tokens", 0))
+                new_val = max(0, current - amount)
+                self.user_registry[uid_str]["tokens"] = new_val
+
             self.save()
+
+            self.log_ledger_event(
+                user_id=uid,
+                action="TOKEN_DEDUCT",
+                change=-amount,
+                tokens_after=new_val,
+                reason=reason or "Feature usage"
+            )
             return new_val
 
-    def set_tokens(self, user_id: Any, amount: int) -> int:
+    def set_tokens(self, user_id: Any, amount: int, reason: str = "") -> int:
         uid = self._to_int(user_id)
         if not uid:
             return 0
@@ -708,7 +749,119 @@ class AdminManager:
                 rec["used"] = max(0, ADMIN_DAILY_LIMIT - new_val)
                 self.admin_daily_usage[uid_str] = rec
             self.save()
+
+            self.log_ledger_event(
+                user_id=uid,
+                action="TOKEN_SET",
+                change=0,
+                tokens_after=new_val,
+                reason=reason or f"Tokens set to {amount}"
+            )
             return new_val
+
+    def log_ledger_event(
+        self,
+        user_id: int,
+        action: str,
+        change: int,
+        tokens_after: int,
+        reason: str = "",
+        extra: Optional[dict] = None
+    ):
+        """
+        Records an immutable transaction entry into the Owner Audit Ledger.
+        """
+        try:
+            now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+            uid_str = str(user_id)
+            user_data = self.user_registry.get(uid_str, {})
+            username = user_data.get("username") or ""
+            first_name = user_data.get("first_name") or ""
+            role = self.get_user_role_label(user_id)
+
+            entry = {
+                "timestamp": now_ist,
+                "epoch": int(time.time()),
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "role": role,
+                "action": action,
+                "change": change,
+                "tokens_after": tokens_after,
+                "reason": reason,
+                "extra": extra or {}
+            }
+
+            AUDIT_LEDGER_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(AUDIT_LEDGER_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"[AdminManager] Failed to log ledger event: {e}")
+
+    def get_recent_ledger(self, limit: int = 15, filter_user_id: Optional[int] = None) -> List[dict]:
+        """
+        Returns the last `limit` events from the audit ledger (newest first).
+        """
+        if not AUDIT_LEDGER_FILE.exists():
+            return []
+        events = []
+        try:
+            with open(AUDIT_LEDGER_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                        if filter_user_id is not None and ev.get("user_id") != filter_user_id:
+                            continue
+                        events.append(ev)
+                    except Exception:
+                        pass
+            return events[-limit:][::-1]
+        except Exception as e:
+            print(f"[AdminManager] Error reading ledger: {e}")
+            return []
+
+    def export_ledger_text(self, filter_user_id: Optional[int] = None) -> str:
+        """
+        Generates a full human-readable audit ledger report for export.
+        """
+        if not AUDIT_LEDGER_FILE.exists():
+            return "No audit transactions recorded yet."
+        lines = [
+            "================================================================================",
+            "           MAXRUMMY & YONOGAMES BOT — OWNER AUDIT & TOKEN LEDGER                ",
+            f"           Generated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}    ",
+            f"           Super Admin: 8327850869 (@OwAtom)                                    ",
+            "================================================================================\n",
+            f"{'TIMESTAMP':<20} | {'USER ID':<12} | {'USERNAME':<15} | {'ACTION':<14} | {'CHANGE':<8} | {'BALANCE':<8} | {'REASON / PLATFORM'}",
+            "-" * 115
+        ]
+        try:
+            with open(AUDIT_LEDGER_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                        if filter_user_id is not None and ev.get("user_id") != filter_user_id:
+                            continue
+                        ts = ev.get("timestamp", "N/A")
+                        uid = str(ev.get("user_id", "N/A"))
+                        u_name = "@" + ev.get("username") if ev.get("username") else (ev.get("first_name") or "User")
+                        act = ev.get("action", "EVENT")
+                        chg = f"{ev.get('change', 0):+d} T" if ev.get('change') is not None else "0 T"
+                        bal = f"{ev.get('tokens_after', 0)} T"
+                        rsn = ev.get("reason", "")
+                        lines.append(f"{ts:<20} | {uid:<12} | {u_name:<15} | {act:<14} | {chg:<8} | {bal:<8} | {rsn}")
+                    except Exception:
+                        pass
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error exporting ledger: {e}"
 
     def get_total_distributed_tokens(self) -> int:
         total = 0

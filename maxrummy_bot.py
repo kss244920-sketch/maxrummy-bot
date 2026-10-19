@@ -35,7 +35,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
 
 from config import BOT_TOKEN, OWNER_ID, SUPPORT_USERNAMES, ACCOUNTS_FILE, CHECKED_ACCOUNTS_FILE
-from admin_manager import admin_manager
+from admin_manager import admin_manager, IST
 from maxrummy_client import (
     MaxRummyClient,
     clean_phone_number,
@@ -575,12 +575,112 @@ def on_callback_query(call: types.CallbackQuery):
         kb.add(types.InlineKeyboardButton("🔙 Admin Panel", callback_data="btn_admin"))
         bot.edit_message_text("\n".join(lines), call.message.chat.id, call.message.message_id, reply_markup=kb)
 
+    elif data == "adm_ledger_view":
+        if not admin_manager.is_super_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Access Denied! Owner Only.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        show_ledger_view(call.message.chat.id, call.message.message_id)
+
+    elif data.startswith("adm_ledger_ref_"):
+        if not admin_manager.is_super_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Access Denied! Owner Only.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id, "🔄 Refreshing ledger...")
+        raw_uid = data.replace("adm_ledger_ref_", "")
+        filt_uid = int(raw_uid) if raw_uid.isdigit() and int(raw_uid) > 0 else None
+        show_ledger_view(call.message.chat.id, call.message.message_id, filter_user_id=filt_uid)
+
+    elif data.startswith("adm_ledger_exp_"):
+        if not admin_manager.is_super_admin(user_id):
+            bot.answer_callback_query(call.id, "⛔ Access Denied! Owner Only.", show_alert=True)
+            return
+        bot.answer_callback_query(call.id, "📥 Generating report...")
+        raw_uid = data.replace("adm_ledger_exp_", "")
+        filt_uid = int(raw_uid) if raw_uid.isdigit() and int(raw_uid) > 0 else None
+        send_ledger_file(call.message.chat.id, filter_user_id=filt_uid)
+
+
+def show_ledger_view(chat_id: int, message_id: Optional[int] = None, filter_user_id: Optional[int] = None):
+    events = admin_manager.get_recent_ledger(limit=10, filter_user_id=filter_user_id)
+    filter_label = f" (User: <code>{filter_user_id}</code>)" if filter_user_id else ""
+    lines = [
+        f"📜 <b>Owner Audit & Activity Ledger</b>{filter_label}",
+        f"<i>Latest {len(events)} events (Newest first):</i>",
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+    if not events:
+        lines.append("<i>No transactions recorded yet in ledger.</i>")
+    else:
+        for ev in events:
+            ts = ev.get("timestamp", "N/A")
+            uid = ev.get("user_id", "N/A")
+            uname = f"@{ev.get('username')}" if ev.get("username") else (ev.get("first_name") or f"ID:{uid}")
+            action = ev.get("action", "EVENT")
+            chg = ev.get("change", 0)
+            chg_str = f"+{chg}" if chg > 0 else str(chg)
+            bal = ev.get("tokens_after", 0)
+            reason = ev.get("reason", "Activity")
+
+            icon = "🔻" if chg < 0 else ("🔺" if chg > 0 else "ℹ️")
+            lines.append(
+                f"{icon} <b>{action}</b> ({chg_str} T) → Bal: <b>{bal} T</b>\n"
+                f"   • <b>User:</b> {uname} (<code>{uid}</code>)\n"
+                f"   • <b>Reason:</b> <code>{reason}</code>\n"
+                f"   • <b>Time:</b> <code>{ts}</code>\n"
+            )
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    cb_refresh = f"adm_ledger_ref_{filter_user_id}" if filter_user_id else "adm_ledger_ref_0"
+    cb_export = f"adm_ledger_exp_{filter_user_id}" if filter_user_id else "adm_ledger_exp_0"
+    b_ref = types.InlineKeyboardButton("🔄 Refresh", callback_data=cb_refresh)
+    b_exp = types.InlineKeyboardButton("📥 Export TXT Report", callback_data=cb_export)
+    b_back = types.InlineKeyboardButton("🔙 Admin Panel", callback_data="btn_admin")
+    kb.add(b_ref, b_exp)
+    kb.add(b_back)
+
+    text = "\n".join(lines)
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=kb)
+        except Exception:
+            bot.send_message(chat_id, text, reply_markup=kb)
+    else:
+        bot.send_message(chat_id, text, reply_markup=kb)
+
+
+def send_ledger_file(chat_id: int, filter_user_id: Optional[int] = None):
+    report_text = admin_manager.export_ledger_text(filter_user_id=filter_user_id)
+    doc = io.BytesIO(report_text.encode("utf-8"))
+    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target_str = f"user_{filter_user_id}_" if filter_user_id else "all_"
+    doc.name = f"Audit_Ledger_{target_str}{date_str}.txt"
+    bot.send_document(
+        chat_id,
+        doc,
+        caption=(
+            f"📄 <b>Full Owner Audit Ledger Export</b>\n"
+            f"• Scope: {'User ' + str(filter_user_id) if filter_user_id else 'All Users & Activities'}\n"
+            f"• Date: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+            f"• Generated for Owner: <code>8327850869</code>"
+        )
+    )
+
 
 def show_admin_panel(chat_id: int, message_id: Optional[int] = None):
     maint_status = "🔴 ON" if admin_manager.is_maintenance_mode() else "🟢 OFF"
     free_status = "🟢 ON" if admin_manager.is_free_mode() else "🔴 OFF"
     total_users = len(admin_manager.user_registry)
     total_tokens = admin_manager.get_total_distributed_tokens()
+    is_owner = admin_manager.is_super_admin(chat_id)
+
+    owner_cmds = ""
+    if is_owner:
+        owner_cmds = (
+            f"• <code>/ledger [user_id]</code> (Activity Ledger)\n"
+            f"• <code>/exportledger [user_id]</code> (Export Report)\n"
+        )
 
     txt = (
         f"👑 <b>Admin Control Suite</b>\n"
@@ -593,15 +693,20 @@ def show_admin_panel(chat_id: int, message_id: Optional[int] = None):
         f"Commands Available:\n"
         f"• <code>/addtokens &lt;user_id&gt; &lt;amount&gt;</code>\n"
         f"• <code>/settokens &lt;user_id&gt; &lt;amount&gt;</code>\n"
-        f"• <code>/broadcast &lt;message&gt;</code>"
+        f"• <code>/broadcast &lt;message&gt;</code>\n"
+        f"{owner_cmds}"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     b_maint = types.InlineKeyboardButton(f"🛠️ Maint: {maint_status}", callback_data="adm_toggle_maint")
     b_free = types.InlineKeyboardButton(f"🎁 Free Mode: {free_status}", callback_data="adm_toggle_free")
     b_users = types.InlineKeyboardButton("👥 Users List", callback_data="adm_users_list")
-    b_back = types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
     kb.add(b_maint, b_free)
-    kb.add(b_users)
+    if is_owner:
+        b_ledger = types.InlineKeyboardButton("📜 Owner Audit Ledger", callback_data="adm_ledger_view")
+        kb.add(b_users, b_ledger)
+    else:
+        kb.add(b_users)
+    b_back = types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
     kb.add(b_back)
 
     if message_id:
@@ -815,7 +920,7 @@ def step_platform_otp_finish(message: types.Message):
     res = client.register(phone, pwd, otp)
 
     if res.get("ok"):
-        admin_manager.deduct_tokens(user_id, 1)
+        admin_manager.deduct_tokens(user_id, 1, reason=f"Single Reg: {p_name} ({phone})")
         claimed_bonus = res.get("claimed_bonus", 0.0)
         tot_bal = res.get("total_balance", claimed_bonus)
         name = res.get("name") or res.get("nickname") or "Player"
@@ -1068,7 +1173,7 @@ def step_multi_platform_otp(message: types.Message):
         res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
-        admin_manager.deduct_tokens(user_id, 1)
+        admin_manager.deduct_tokens(user_id, 1, reason=f"Multi Reg: {p_name} ({phone})")
         claimed_bonus = res.get("claimed_bonus", 0.0)
         tot_bal = res.get("total_balance", claimed_bonus)
         uid = res.get("uid")
@@ -1200,7 +1305,7 @@ def step_reg_finish(message: types.Message):
         res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
-        admin_manager.deduct_tokens(user_id, 1)
+        admin_manager.deduct_tokens(user_id, 1, reason=f"Direct Reg: {phone}")
         claimed_bonus = res.get("claimed_bonus", 0.0)
         name = res.get("name") or res.get("nickname") or "Player"
         uid = res.get("uid")
@@ -1350,7 +1455,7 @@ def step_bind_phone_step3(message: types.Message):
         res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
-        admin_manager.deduct_tokens(user_id, 1)
+        admin_manager.deduct_tokens(user_id, 1, reason=f"Phone Bind: {phone_to_bind} to {acc_user}")
         rem_tokens = admin_manager.get_display_tokens(user_id)
         bal = res.get("balance", 0.0)
         uid = res.get("uid")
@@ -1417,7 +1522,7 @@ def step_claim_single_account(message: types.Message):
     res = client.claim_bonuses(phone, password)
 
     if res.get("ok"):
-        admin_manager.deduct_tokens(user_id, 1)
+        admin_manager.deduct_tokens(user_id, 1, reason=f"Bonus Claim: {phone}")
         rem_tokens = admin_manager.get_display_tokens(user_id)
 
         bal_before = res.get("balance_before", 0.0)
@@ -1528,7 +1633,7 @@ def step_claim_bulk_accounts(message: types.Message):
         total_claimed = bulk_res["total_claimed"]
 
         if success_cnt > 0 and not admin_manager.is_free_mode():
-            admin_manager.deduct_tokens(user_id, success_cnt)
+            admin_manager.deduct_tokens(user_id, success_cnt, reason=f"Bulk Claim ({success_cnt}/{total_accs} accs)")
 
         rem_tokens = admin_manager.get_display_tokens(user_id)
 
@@ -1609,7 +1714,7 @@ def step_check_single_account(message: types.Message):
     res = client.login(phone, password)
 
     if res.get("ok"):
-        admin_manager.deduct_tokens(user_id, 1)
+        admin_manager.deduct_tokens(user_id, 1, reason=f"Balance Check: {phone}")
         rem_tokens = admin_manager.get_display_tokens(user_id)
 
         coin = res.get("coin", 0.0)
@@ -1727,7 +1832,7 @@ def step_check_bulk_accounts(message: types.Message):
         total_cash = bulk_res["total_cash"]
 
         if success_cnt > 0 and not admin_manager.is_free_mode():
-            admin_manager.deduct_tokens(user_id, success_cnt)
+            admin_manager.deduct_tokens(user_id, success_cnt, reason=f"Bulk Balance Check ({success_cnt}/{total_accs} accs)")
 
         rem_tokens = admin_manager.get_display_tokens(user_id)
 
@@ -1800,7 +1905,7 @@ def cmd_add_tokens(message: types.Message):
         return
     target_uid = int(parts[1])
     amt = int(parts[2])
-    admin_manager.add_tokens(target_uid, amt)
+    admin_manager.add_tokens(target_uid, amt, reason=f"Manual Add by Admin {user_id}")
     new_bal = admin_manager.get_tokens(target_uid)
     bot.reply_to(message, f"✅ Added {amt} tokens to <code>{target_uid}</code>. New balance: <b>{new_bal}</b>.")
 
@@ -1816,8 +1921,34 @@ def cmd_set_tokens(message: types.Message):
         return
     target_uid = int(parts[1])
     amt = int(parts[2])
-    admin_manager.set_tokens(target_uid, amt)
+    admin_manager.set_tokens(target_uid, amt, reason=f"Manual Set by SuperAdmin {user_id}")
     bot.reply_to(message, f"✅ Set tokens for <code>{target_uid}</code> to <b>{amt}</b>.")
+
+
+@bot.message_handler(commands=["ledger", "audit"])
+def cmd_ledger(message: types.Message):
+    user_id = message.from_user.id
+    if not admin_manager.is_super_admin(user_id):
+        bot.reply_to(message, "⛔ Access Denied! Ledger is strictly restricted to Owner (@OwAtom).")
+        return
+    parts = message.text.split()
+    target_uid = None
+    if len(parts) > 1 and parts[1].isdigit():
+        target_uid = int(parts[1])
+    show_ledger_view(message.chat.id, None, filter_user_id=target_uid)
+
+
+@bot.message_handler(commands=["exportledger"])
+def cmd_export_ledger(message: types.Message):
+    user_id = message.from_user.id
+    if not admin_manager.is_super_admin(user_id):
+        bot.reply_to(message, "⛔ Access Denied! Ledger is strictly restricted to Owner (@OwAtom).")
+        return
+    parts = message.text.split()
+    target_uid = None
+    if len(parts) > 1 and parts[1].isdigit():
+        target_uid = int(parts[1])
+    send_ledger_file(message.chat.id, filter_user_id=target_uid)
 
 
 @bot.message_handler(commands=["broadcast"])
