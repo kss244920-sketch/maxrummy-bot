@@ -1,0 +1,50 @@
+[
+  {
+    "id": "spin_777",
+    "name": "Spin 777",
+    "app_id": 17,
+    "bundle_id": "com.spin.sev.games",
+    "app_version": "1.2.0",
+    "res_version": "1.2.1.5",
+    "login_server": "m\u0670\uf9ef\u0678\uf9f6\u0673\uf9f0\u0676\uf9ec\u0611\uf9ec\u0611",
+    "sms_otp_url": "\uffdd \uffdd \uffdd\u008c\uffd2+\uffd2+\uffd2+\uffd2\u0241\ufe1e\u0249\ufe25\u0244\ufe1f\u0248\ufe1b\u01e2\ufe1b\u0901\uf6fc\u0901\uff92k\uff92k\uff92k",
+    "auth_salt": "hero888",
+    "invite_code": "7V9GXBA3JNX"
+  },
+  {
+    "id": "spin_101",
+    "name": "Spin 101",
+    "app_id": 17,
+    "bundle_id": "com.spin.sozo.games",
+    "app_version": "1.1.8",
+    "res_version": "1.2.1.2",
+    "login_server": "n\u066f\uf98e\u066f\uf98e\u066f\uf98e\u066f\u00b2\uff4b\u00b2\uff4b",
+    "sms_otp_url": "\uffdc!\uffdc!\uffdc\u008d\uffd1,\uffd1,\uffd1,\uffd1\u0242\ufdbb\u0242\ufdbb\u0963\uf69a\u0963\uf69a\u0fc3\uf03a\u0fc3\uf759\u08a4\uf759\u113a\ueec3\u113a\ueec3\u113a\ueec3",
+    "auth_salt": "hero888",
+    "invite_code": "P4CJE5B5YWF"
+  },
+  {
+    "id": "ind_club",
+    "name": "IND Club",
+    "app_id": 17,
+    "bundle_id": "com.rummy.games.inds",
+    "app_version": "1.1.4",
+    "res_version": "1.1.6.4",
+    "login_server": "\uffec\u06f1\uf90c\u06f1\uf90c\u06f1\uf90c\u0c8f\uf36e\u0c8f\uf3e1\u0c1c\uf3e1\u133a\uecc3\u133a\uecc3",
+    "sms_otp_url": "\uffda#\uffda#\uffda\u008f\uffcf.\uffcf.\uffcf.\uffcf\u0244\ufdb9\u0244\ufdb9\u0244\ufdb9\u0244\u0393\ufcd2\u032b\ufcd2\u032b\ufcd2\u0a4a\uf5b3\u0a4a\ufe49\u01b4\ufe49\u01b4\ufe49\u01b4",
+    "auth_salt": "hero888",
+    "invite_code": "34U4H5AWEHG"
+  },
+  {
+    "id": "yono_rummy",
+    "name": "Yono Rummy",
+    "app_id": 17,
+    "bundle_id": "com.tppart.games.yo",
+    "app_version": "2.3.1",
+    "res_version": "1.6.8.9",
+    "login_server": "n\u066f\uf98e\u066f\uf98e\u066f\uf98e\u066f\ufaa9\u05bb\ufa42\u05bb\ufa42",
+    "sms_otp_url": "\uffdc!\uffdc!\uffdc\u008d\uffd1,\uffd1,\uffd1,\uffd1\u0242\ufdbb\u0242\ufdbb\u0242\ufdbb\u0242\ufdbb\u0a23\uf5da\u0a23\ufcf9\u0304\ufcf9\u0b9a\uf463\u0b9a\uf463\u0b9a\uf463",
+    "auth_salt": "hero888",
+    "invite_code": "VIPU274KHJZ"
+  }
+]

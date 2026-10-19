@@ -1,0 +1,4 @@
+pyTelegramBotAPI>=4.26.0
+websockets>=13.0
+msgpack>=1.0.0
+requests>=2.31.0

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+registered_accounts.txt
+checked_accounts.txt
+jrnm_identity.token

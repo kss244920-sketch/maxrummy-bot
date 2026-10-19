@@ -1,0 +1,1702 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+MaxRummy & YonoGames Automated Bot
+Features:
+- Single & Bulk Registration with SMS OTP + Auto-Claim Bind Bonus
+- Bind Phone Number & Claim Bonus (Welcome Bind Gift)
+- Single & Bulk Claim All Bonuses (Bind Gift, 7-Day Cycle, Daily Sign-in, Today Rewards)
+- Single & Bulk Login and Balance Verification
+- Token & Quota Billing Engine (Prince Admin daily caps, Owner unlimited)
+- 0-Balance Protection with direct recharge support (@OwAtom / @OwKarma)
+- Real-time ThreadPool bulk checker with detailed exportable txt reports
+"""
+
+import os
+import sys
+import time
+import json
+import io
+import re
+import random
+import threading
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, Any, Optional, List, Tuple
+
+import telebot
+from telebot import types
+
+# Add current directory to path
+BASE_DIR = Path(__file__).parent.resolve()
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+from config import BOT_TOKEN, OWNER_ID, SUPPORT_USERNAMES, ACCOUNTS_FILE, CHECKED_ACCOUNTS_FILE
+from admin_manager import admin_manager
+from maxrummy_client import (
+    MaxRummyClient,
+    clean_phone_number,
+    bulk_check_accounts,
+    bulk_claim_bonuses,
+    PLATFORMS_LIST,
+    PLATFORMS_MAP
+)
+
+# Initialize bot
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+
+# In-memory user state cache for multi-step wizards
+USER_STATES: Dict[int, dict] = {}
+
+
+def log(msg: str):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}", flush=True)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Helpers & Keyboards
+# ─────────────────────────────────────────────────────────────
+
+def get_main_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b_multi = types.InlineKeyboardButton(f"🌐 Multi-Platform Checker ({len(PLATFORMS_LIST)} Yono Apps)", callback_data="btn_check_platforms")
+    b_reg = types.InlineKeyboardButton("🎁 Bind Number & Get Bonus", callback_data="btn_reg_single")
+    b_claim = types.InlineKeyboardButton("💰 Check / Claim Bonus", callback_data="btn_claim_single")
+    b_check = types.InlineKeyboardButton("💵 Check Balance", callback_data="btn_check_single")
+    b_bulk_claim = types.InlineKeyboardButton("⚡ Bulk Claim Bonus", callback_data="btn_claim_bulk")
+    b_bulk_check = types.InlineKeyboardButton("📊 Bulk Balance Check", callback_data="btn_check_bulk")
+    b_profile = types.InlineKeyboardButton("👤 My Wallet / Tokens", callback_data="btn_profile")
+    b_support = types.InlineKeyboardButton("💬 Support / Recharge", callback_data="btn_support")
+    
+    markup.add(b_multi)
+    markup.add(b_reg)
+    markup.add(b_claim, b_check)
+    markup.add(b_bulk_claim, b_bulk_check)
+    markup.add(b_profile, b_support)
+
+    if admin_manager.is_admin(user_id):
+        b_admin = types.InlineKeyboardButton("👑 Admin Suite", callback_data="btn_admin")
+        markup.add(b_admin)
+
+    return markup
+
+
+def get_insufficient_tokens_msg(user_id: int, required: int = 1) -> Tuple[str, types.InlineKeyboardMarkup]:
+    tokens = admin_manager.get_tokens(user_id)
+    text = (
+        f"⚠️ <b>Insufficient Tokens!</b>\n\n"
+        f"❌ Aapke paas is task ke liye paryapt tokens nahi hain!\n"
+        f"• <b>Current Tokens:</b> <code>{tokens}</code>\n"
+        f"• <b>Required Tokens:</b> <code>{required}</code>\n\n"
+        f"💳 Tokens recharge karwane ke liye turant contact karein:\n"
+        f"👉 <b>@OwAtom</b>\n"
+        f"👉 <b>@OwKarma</b>"
+    )
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("💬 Contact @OwAtom", url="https://t.me/OwAtom"),
+        types.InlineKeyboardButton("💬 Contact @OwKarma", url="https://t.me/OwKarma")
+    )
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu"))
+    return text, markup
+
+
+def save_account_record(filepath: Path, line: str):
+    try:
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "a", encoding="utf-8") as f:
+            f.write(line.strip() + "\n")
+    except Exception as e:
+        log(f"Failed to save account record: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+#  Bot Command Handlers
+# ─────────────────────────────────────────────────────────────
+
+@bot.message_handler(commands=["start", "menu"])
+def cmd_start(message: types.Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or message.from_user.first_name
+    admin_manager.record_user(user_id, username=username, first_name=message.from_user.first_name)
+
+    if admin_manager.is_maintenance_mode() and not admin_manager.is_admin(user_id):
+        bot.reply_to(message, "🛠️ <b>Bot Maintenance Mode Me Hai!</b>\nKuch hi der me services wapas live ho jayengi.")
+        return
+
+    tokens = admin_manager.get_display_tokens(user_id)
+    role = admin_manager.get_user_role_label(user_id)
+
+    welcome_text = (
+        f"👋 <b>Welcome, {message.from_user.first_name}!</b>\n\n"
+        f"🎰 <b>MaxRummy & YonoGames Auto-Bot</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>User ID:</b> <code>{user_id}</code>\n"
+        f"• <b>Role:</b> {role}\n"
+        f"• <b>Available Tokens:</b> <code>{tokens}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Available Features:</b>\n"
+        f"• 🌐 <b>Multi-Platform Checker:</b> Check {len(PLATFORMS_LIST)}+ Yono apps live & 1-by-1 register\n"
+        f"• 📱 <b>Register:</b> OTP verify + auto-claim Bind Bonus\n"
+        f"• 🔗 <b>Bind Phone:</b> Account bind karo & instant bonus lo\n"
+        f"• 🎁 <b>Claim Bonus:</b> Bind gift, 7-Day & daily rewards auto-collect\n"
+        f"• 💰 <b>Check Balance:</b> Single & Bulk balance extraction\n\n"
+        f"Neeche diye gaye buttons se apna task select karein:"
+    )
+    bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_keyboard(user_id))
+
+
+@bot.message_handler(commands=["balance", "tokens"])
+def cmd_balance(message: types.Message):
+    user_id = message.from_user.id
+    tokens = admin_manager.get_display_tokens(user_id)
+    role = admin_manager.get_user_role_label(user_id)
+    text = (
+        f"👤 <b>Your Account Info</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>User ID:</b> <code>{user_id}</code>\n"
+        f"• <b>Role:</b> {role}\n"
+        f"• <b>Tokens Balance:</b> <code>{tokens}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Agar aapko tokens recharge karane hain to @OwAtom ya @OwKarma se sampark karein."
+    )
+    bot.reply_to(message, text, reply_markup=get_main_keyboard(user_id))
+
+
+@bot.message_handler(commands=["check", "probe"])
+def cmd_check_platforms(message: types.Message):
+    user_id = message.from_user.id
+    if admin_manager.is_maintenance_mode() and not admin_manager.is_admin(user_id):
+        bot.reply_to(message, "🛠️ <b>Bot Maintenance Mode Me Hai!</b>")
+        return
+
+    parts = message.text.split()
+    if len(parts) > 1:
+        phone = clean_phone_number(parts[1])
+        if len(phone) == 10:
+            execute_platform_check(message.chat.id, user_id, phone, reply_to_msg_id=message.message_id)
+            return
+
+    prompt_txt = (
+        "🌐 <b>Multi-Platform Availability Checker</b>\n\n"
+        "Kripya <b>10-digit Mobile Number</b> bhejein jisko check karna hai:\n"
+        "<i>(Example: 9876543210)</i>\n\n"
+        f"⚡ Ye number ko ek sath <b>{len(PLATFORMS_LIST)} Yono platforms</b> (Spin Gold, Max Rummy, IND Club, Yono Rummy, Spin 777, etc.) par parallel check karega.\n\n"
+        "Cancel karne ke liye /cancel bhejein."
+    )
+    msg_obj = bot.send_message(message.chat.id, prompt_txt)
+    bot.register_next_step_handler(msg_obj, step_check_platforms_get_phone)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Callback Query Router
+# ─────────────────────────────────────────────────────────────
+
+@bot.callback_query_handler(func=lambda call: True)
+def on_callback_query(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    data = call.data
+
+    admin_manager.record_user(user_id, username=call.from_user.username, first_name=call.from_user.first_name)
+
+    if admin_manager.is_maintenance_mode() and not admin_manager.is_admin(user_id):
+        bot.answer_callback_query(call.id, "Bot maintenance mode me hai!", show_alert=True)
+        return
+
+    if data == "btn_main_menu":
+        bot.answer_callback_query(call.id)
+        tokens = admin_manager.get_display_tokens(user_id)
+        role = admin_manager.get_user_role_label(user_id)
+        welcome_text = (
+            f"👋 <b>Welcome Back!</b>\n\n"
+            f"🎰 <b>MaxRummy & YonoGames Auto-Bot</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>User ID:</b> <code>{user_id}</code>\n"
+            f"• <b>Role:</b> {role}\n"
+            f"• <b>Tokens:</b> <code>{tokens}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Choose an option below:"
+        )
+        bot.edit_message_text(welcome_text, call.message.chat.id, call.message.message_id, reply_markup=get_main_keyboard(user_id))
+
+    elif data == "btn_profile":
+        bot.answer_callback_query(call.id)
+        tokens = admin_manager.get_display_tokens(user_id)
+        role = admin_manager.get_user_role_label(user_id)
+        txt = (
+            f"👤 <b>User Wallet & Statistics</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>User ID:</b> <code>{user_id}</code>\n"
+            f"• <b>Username:</b> @{call.from_user.username or 'N/A'}\n"
+            f"• <b>Role:</b> {role}\n"
+            f"• <b>Tokens:</b> <code>{tokens}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Need more tokens? Contact 👉 @OwAtom / @OwKarma"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu"))
+        bot.edit_message_text(txt, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+    elif data == "btn_support":
+        bot.answer_callback_query(call.id)
+        txt = (
+            f"💬 <b>Official Support & Token Recharge</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Tokens purchase karne, bulk balance checker access lene, ya kisi bhi query ke liye official admins se contact karein:\n\n"
+            f"👑 <b>Owner:</b> @OwAtom\n"
+            f"🛡️ <b>Admin:</b> @OwKarma\n\n"
+            f"⚡ Instant recharge & 24x7 support available."
+        )
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            types.InlineKeyboardButton("💬 @OwAtom", url="https://t.me/OwAtom"),
+            types.InlineKeyboardButton("💬 @OwKarma", url="https://t.me/OwKarma")
+        )
+        kb.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu"))
+        bot.edit_message_text(txt, call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Multi-Platform Checker & Registration Callbacks
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_check_platforms":
+        bot.answer_callback_query(call.id)
+        prompt_txt = (
+            "🌐 <b>Multi-Platform Availability Checker</b>\n\n"
+            "Kripya apna <b>10-digit Mobile Number</b> bhejein jisko check karna hai:\n"
+            "<i>(Example: 9876543210)</i>\n\n"
+            f"⚡ Ye number ko ek sath <b>{len(PLATFORMS_LIST)} Yono platforms</b> (Spin Gold, Max Rummy, IND Club, Yono Rummy, Spin 777, etc.) par parallel check karega.\n\n"
+            "Cancel karne ke liye /cancel bhejein."
+        )
+        msg_obj = bot.send_message(call.message.chat.id, prompt_txt)
+        bot.register_next_step_handler(msg_obj, step_check_platforms_get_phone)
+
+    elif data.startswith("pchk:"):
+        phone = data.split(":", 1)[1]
+        bot.answer_callback_query(call.id, "Re-checking all platforms...")
+        execute_platform_check(call.message.chat.id, user_id, phone, message_id=call.message.message_id)
+
+    elif data.startswith("preg:"):
+        parts = data.split(":", 2)
+        if len(parts) == 3:
+            _, p_id, phone = parts
+            initiate_single_platform_reg(call, p_id, phone)
+
+    elif data.startswith("pregall:"):
+        parts = data.split(":", 1)
+        if len(parts) == 2:
+            phone = parts[1]
+            initiate_multi_platform_reg(call, phone)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Bind Number & Get Bonus Flow (New Registration + Bind Gift)
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_reg_single":
+        if not admin_manager.has_enough_tokens(user_id, 1):
+            msg, kb = get_insufficient_tokens_msg(user_id, 1)
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+            return
+
+        bot.answer_callback_query(call.id)
+        prompt_txt = (
+            "🎁 <b>Bind Number & Get Bonus (वेलकम बोनस क्लेम)</b>\n\n"
+            "Kripya apna <b>10-digit Mobile Number</b> bhejein jisko bind karke bonus claim karna hai:\n"
+            "<i>(Example: 9876543210)</i>\n\n"
+            "Number par instant OTP aayega. Cancel karne ke liye /cancel bhejein."
+        )
+        msg_obj = bot.send_message(call.message.chat.id, prompt_txt)
+        bot.register_next_step_handler(msg_obj, step_reg_get_phone)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Bind Phone & Claim Bonus Flow
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_bind_phone":
+        if not admin_manager.has_enough_tokens(user_id, 1):
+            msg, kb = get_insufficient_tokens_msg(user_id, 1)
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+            return
+
+        bot.answer_callback_query(call.id)
+        prompt_txt = (
+            "🔗 <b>Bind Phone Number & Claim Bonus</b>\n\n"
+            "Kripya target account details aur bind karne wala number bhejein format me:\n"
+            "<code>Phone:Password</code> (jis account me login karke bind karna hai)\n\n"
+            "<i>Example:</i> <code>9876543210:MyPass123</code>\n\n"
+            "Ya cancel karne ke liye /cancel bhejein."
+        )
+        msg_obj = bot.send_message(call.message.chat.id, prompt_txt)
+        bot.register_next_step_handler(msg_obj, step_bind_phone_step1)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Single Bonus Claim Flow
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_claim_single":
+        if not admin_manager.has_enough_tokens(user_id, 1):
+            msg, kb = get_insufficient_tokens_msg(user_id, 1)
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+            return
+
+        bot.answer_callback_query(call.id)
+        prompt_txt = (
+            "🎁 <b>Claim Account Bonuses (Bind Gift, 7-Day & Daily)</b>\n\n"
+            "Kripya account credentials bhejein format me:\n"
+            "<code>Phone:Password</code>\n\n"
+            "<i>Example:</i> <code>9876543210:MyPass123</code>\n\n"
+            "Ye automatically Bind Bonus (Welcome Gift), 7-Day Sign-in, aur Daily Rewards claim karega!\n"
+            "Ya cancel karne ke liye /cancel bhejein."
+        )
+        msg_obj = bot.send_message(call.message.chat.id, prompt_txt)
+        bot.register_next_step_handler(msg_obj, step_claim_single_account)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Bulk Bonus Claim Flow
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_claim_bulk":
+        tokens = admin_manager.get_tokens(user_id)
+        if tokens <= 0 and not admin_manager.is_free_mode():
+            msg, kb = get_insufficient_tokens_msg(user_id, 1)
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+            return
+
+        bot.answer_callback_query(call.id)
+        prompt_txt = (
+            "⚡ <b>Bulk Bonus Claimer (All Accounts)</b>\n\n"
+            "Aap accounts ki list paste kar sakte hain ya ek <b>.txt file</b> upload kar sakte hain.\n\n"
+            "<b>Format:</b>\n"
+            "<code>phone:password</code>\n"
+            "<code>phone:password</code>\n\n"
+            f"• <b>Your Token Balance:</b> <code>{tokens}</code>\n"
+            "<i>(Har successful claim process par 1 token deduct hoga)</i>\n\n"
+            "Bhejiye accounts list ya file:"
+        )
+        msg_obj = bot.send_message(call.message.chat.id, prompt_txt)
+        bot.register_next_step_handler(msg_obj, step_claim_bulk_accounts)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Single Balance Check Flow
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_check_single":
+        if not admin_manager.has_enough_tokens(user_id, 1):
+            msg, kb = get_insufficient_tokens_msg(user_id, 1)
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+            return
+
+        bot.answer_callback_query(call.id)
+        prompt_txt = (
+            "💰 <b>Single Account Balance Check</b>\n\n"
+            "Kripya account credentials bhejein format me:\n"
+            "<code>Phone:Password</code>\n\n"
+            "<i>Example:</i> <code>9876543210:MyPass123</code>\n\n"
+            "Ya cancel karne ke liye /cancel bhejein."
+        )
+        msg_obj = bot.send_message(call.message.chat.id, prompt_txt)
+        bot.register_next_step_handler(msg_obj, step_check_single_account)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Bulk Balance Check Flow
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_check_bulk":
+        tokens = admin_manager.get_tokens(user_id)
+        if tokens <= 0 and not admin_manager.is_free_mode():
+            msg, kb = get_insufficient_tokens_msg(user_id, 1)
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+            return
+
+        bot.answer_callback_query(call.id)
+        prompt_txt = (
+            "📊 <b>Bulk Accounts Balance Checker</b>\n\n"
+            "Aap accounts ki list paste kar sakte hain ya ek <b>.txt file</b> upload kar sakte hain.\n\n"
+            "<b>Format:</b>\n"
+            "<code>phone:password</code>\n"
+            "<code>phone:password</code>\n\n"
+            f"• <b>Your Token Balance:</b> <code>{tokens}</code>\n"
+            "<i>(Har successful account check par 1 token deduct hoga)</i>\n\n"
+            "Bhejiye accounts list ya file:"
+        )
+        msg_obj = bot.send_message(call.message.chat.id, prompt_txt)
+        bot.register_next_step_handler(msg_obj, step_check_bulk_accounts)
+
+    # ─────────────────────────────────────────────────────────────
+    #  Admin Suite
+    # ─────────────────────────────────────────────────────────────
+    elif data == "btn_admin":
+        if not admin_manager.is_admin(user_id):
+            bot.answer_callback_query(call.id, "Access Denied!", show_alert=True)
+            return
+        bot.answer_callback_query(call.id)
+        show_admin_panel(call.message.chat.id, call.message.message_id)
+
+    elif data == "adm_toggle_maint":
+        if not admin_manager.is_admin(user_id):
+            return
+        m = admin_manager.toggle_maintenance_mode()
+        bot.answer_callback_query(call.id, f"Maintenance Mode: {'ON' if m else 'OFF'}", show_alert=True)
+        show_admin_panel(call.message.chat.id, call.message.message_id)
+
+    elif data == "adm_toggle_free":
+        if not admin_manager.is_admin(user_id):
+            return
+        f = admin_manager.toggle_free_mode()
+        bot.answer_callback_query(call.id, f"Free Mode: {'ON' if f else 'OFF'}", show_alert=True)
+        show_admin_panel(call.message.chat.id, call.message.message_id)
+
+    elif data == "adm_users_list":
+        if not admin_manager.is_admin(user_id):
+            return
+        bot.answer_callback_query(call.id)
+        users = admin_manager.user_registry
+        lines = [f"👥 <b>Total Registered Users: {len(users)}</b>\n"]
+        for uid_s, u in list(users.items())[:20]:
+            lines.append(f"• <code>{uid_s}</code> (@{u.get('username') or 'N/A'}) - {u.get('role')} - <b>{u.get('tokens')} T</b>")
+        if len(users) > 20:
+            lines.append(f"\n<i>...aur {len(users)-20} users hain.</i>")
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔙 Admin Panel", callback_data="btn_admin"))
+        bot.edit_message_text("\n".join(lines), call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+
+def show_admin_panel(chat_id: int, message_id: Optional[int] = None):
+    maint_status = "🔴 ON" if admin_manager.is_maintenance_mode() else "🟢 OFF"
+    free_status = "🟢 ON" if admin_manager.is_free_mode() else "🔴 OFF"
+    total_users = len(admin_manager.user_registry)
+    total_tokens = admin_manager.get_total_distributed_tokens()
+
+    txt = (
+        f"👑 <b>Admin Control Suite</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Maintenance Mode:</b> {maint_status}\n"
+        f"• <b>Free Mode:</b> {free_status}\n"
+        f"• <b>Total Users:</b> {total_users}\n"
+        f"• <b>Active Tokens Pool:</b> {total_tokens:,}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Commands Available:\n"
+        f"• <code>/addtokens &lt;user_id&gt; &lt;amount&gt;</code>\n"
+        f"• <code>/settokens &lt;user_id&gt; &lt;amount&gt;</code>\n"
+        f"• <code>/broadcast &lt;message&gt;</code>"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    b_maint = types.InlineKeyboardButton(f"🛠️ Maint: {maint_status}", callback_data="adm_toggle_maint")
+    b_free = types.InlineKeyboardButton(f"🎁 Free Mode: {free_status}", callback_data="adm_toggle_free")
+    b_users = types.InlineKeyboardButton("👥 Users List", callback_data="adm_users_list")
+    b_back = types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+    kb.add(b_maint, b_free)
+    kb.add(b_users)
+    kb.add(b_back)
+
+    if message_id:
+        bot.edit_message_text(txt, chat_id, message_id, reply_markup=kb)
+    else:
+        bot.send_message(chat_id, txt, reply_markup=kb)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Multi-Platform Checker & Registration Engine (10+ Yono)
+# ─────────────────────────────────────────────────────────────
+
+def step_check_platforms_get_phone(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        bot.reply_to(message, "❌ Check cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    phone = clean_phone_number(message.text or "")
+    if len(phone) != 10:
+        msg = bot.reply_to(message, "❌ Invalid number! 10-digit number bhejein (ya /cancel karein):")
+        bot.register_next_step_handler(msg, step_check_platforms_get_phone)
+        return
+
+    execute_platform_check(message.chat.id, user_id, phone, reply_to_msg_id=message.message_id)
+
+
+def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_id: Optional[int] = None, message_id: Optional[int] = None):
+    clean_phone = clean_phone_number(phone)
+    if len(clean_phone) != 10:
+        bot.send_message(chat_id, "❌ Invalid phone number! 10-digit number required.")
+        return
+
+    init_text = f"🔍 <b>Checking mobile <code>{clean_phone}</code> across {len(PLATFORMS_LIST)} Yono platforms in parallel...</b>"
+    if message_id:
+        try:
+            bot.edit_message_text(init_text, chat_id, message_id)
+            status_msg_id = message_id
+        except Exception:
+            status_msg = bot.send_message(chat_id, init_text)
+            status_msg_id = status_msg.message_id
+    else:
+        status_msg = bot.send_message(chat_id, init_text, reply_to_message_id=reply_to_msg_id)
+        status_msg_id = status_msg.message_id
+
+    def _worker():
+        try:
+            results = MaxRummyClient.check_all_platforms(clean_phone)
+            avail = [r for r in results if r.get("status") == "available"]
+            reg = [r for r in results if r.get("status") == "registered"]
+            cooldown = [r for r in results if r.get("status") == "cooldown"]
+            errors = [r for r in results if r.get("status") not in ("available", "registered", "cooldown")]
+
+            lines = [
+                f"🌐 <b>Multi-Platform Status Report</b>",
+                f"━━━━━━━━━━━━━━━━━━━━━━",
+                f"📱 <b>Mobile:</b> <code>{clean_phone}</code>",
+                f"📊 <b>Total Checked:</b> {len(results)} Platforms\n"
+            ]
+
+            if avail:
+                lines.append(f"🟢 <b>Fresh / Available for Registration ({len(avail)}):</b>")
+                for r in avail:
+                    lines.append(f"  • <b>{r['name']}</b> <i>(Fresh)</i>")
+                lines.append("")
+
+            if reg:
+                lines.append(f"🔴 <b>Already Registered ({len(reg)}):</b>")
+                for r in reg:
+                    lines.append(f"  • {r['name']}")
+                lines.append("")
+
+            if cooldown:
+                lines.append(f"⏳ <b>Number on Cooldown ({len(cooldown)}):</b>")
+                for r in cooldown:
+                    lines.append(f"  • {r['name']} - <i>{r.get('msg')}</i>")
+                lines.append("")
+
+            if errors:
+                lines.append(f"⚠️ <b>Other / Offline ({len(errors)}):</b>")
+                for r in errors:
+                    lines.append(f"  • {r['name']} - <i>{r.get('msg')}</i>")
+                lines.append("")
+
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            if avail:
+                lines.append("Platform select karke OTP mangwayein ya <b>1 by 1 All</b> se sabhi par register karein:")
+            else:
+                lines.append("⚠️ Is number par koi bhi platform fresh/available nahi mila.")
+
+            text = "\n".join(lines)
+
+            kb = types.InlineKeyboardMarkup()
+            if avail:
+                p_buttons = []
+                for r in avail:
+                    pid = r["platform_id"]
+                    pname = r["name"]
+                    p_buttons.append(types.InlineKeyboardButton(f"🎁 {pname}", callback_data=f"preg:{pid}:{clean_phone}"))
+
+                for i in range(0, len(p_buttons), 2):
+                    kb.row(*p_buttons[i:i+2])
+
+                if len(avail) > 1:
+                    kb.row(types.InlineKeyboardButton(f"⚡ 1 by 1 All ({len(avail)} Platforms)", callback_data=f"pregall:{clean_phone}"))
+
+            kb.row(
+                types.InlineKeyboardButton("🔄 Re-check", callback_data=f"pchk:{clean_phone}"),
+                types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+            )
+
+            bot.edit_message_text(text, chat_id, status_msg_id, reply_markup=kb)
+        except Exception as e:
+            bot.edit_message_text(
+                f"❌ <b>Platform check error:</b> {str(e)}",
+                chat_id,
+                status_msg_id,
+                reply_markup=get_main_keyboard(user_id)
+            )
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, phone: str):
+    user_id = call.from_user.id
+    if not admin_manager.has_enough_tokens(user_id, 1):
+        msg, kb = get_insufficient_tokens_msg(user_id, 1)
+        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+        return
+
+    p_info = PLATFORMS_MAP.get(platform_id)
+    if not p_info:
+        bot.answer_callback_query(call.id, "Platform not found!", show_alert=True)
+        return
+
+    p_name = p_info["name"]
+    bot.answer_callback_query(call.id, f"Sending OTP for {p_name}...")
+
+    status_msg = bot.send_message(
+        call.message.chat.id,
+        f"⏳ <b>[{p_name}]</b> Mobile <code>{phone}</code> par OTP bheja ja raha hai..."
+    )
+
+    client = MaxRummyClient(platform=p_info)
+    res = client.send_otp(phone)
+
+    if not res.get("ok"):
+        kb = types.InlineKeyboardMarkup()
+        kb.row(
+            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}"),
+            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+        )
+        bot.edit_message_text(
+            f"❌ <b>OTP Send Failed for {p_name}!</b>\nReason: {res.get('msg')}\n\nKripya dobara koshish karein.",
+            call.message.chat.id,
+            status_msg.message_id,
+            reply_markup=kb
+        )
+        return
+
+    USER_STATES[user_id] = {
+        "action": "single_platform_reg",
+        "platform_id": platform_id,
+        "platform_name": p_name,
+        "phone": phone,
+        "otp_time": time.time()
+    }
+
+    prompt_txt = (
+        f"✅ <b>OTP Sent Successfully for {p_name}!</b>\n\n"
+        f"📱 <b>Mobile:</b> <code>{phone}</code>\n"
+        f"🎰 <b>Platform:</b> {p_name}\n\n"
+        f"Kripya received <b>OTP aur Password</b> bhejein format me:\n"
+        f"<code>OTP:Password</code>\n\n"
+        f"<i>(Example: 123456:Pass@1234, ya sirf OTP bhejein to auto-password set hoga)</i>\n"
+        f"Cancel karne ke liye /cancel bhejein."
+    )
+    bot.edit_message_text(prompt_txt, call.message.chat.id, status_msg.message_id)
+    bot.register_next_step_handler(status_msg, step_platform_otp_finish)
+
+
+def step_platform_otp_finish(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        USER_STATES.pop(user_id, None)
+        bot.reply_to(message, "❌ Registration cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    state = USER_STATES.get(user_id)
+    if not state or state.get("action") != "single_platform_reg":
+        bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    text = message.text.strip()
+    if ":" in text:
+        parts = text.split(":", 1)
+        otp = parts[0].strip()
+        pwd = parts[1].strip()
+    else:
+        otp = text
+        pwd = f"User{random.randint(10000, 99999)}"
+
+    phone = state["phone"]
+    p_id = state["platform_id"]
+    p_info = PLATFORMS_MAP.get(p_id)
+    p_name = state.get("platform_name", "Platform")
+
+    status_msg = bot.reply_to(message, f"⏳ <b>[{p_name}]</b> Registering <code>{phone}</code> & claiming Welcome Bonus...")
+
+    client = MaxRummyClient(platform=p_info)
+    res = client.register(phone, pwd, otp)
+
+    if res.get("ok"):
+        admin_manager.deduct_tokens(user_id, 1)
+        claimed_bonus = res.get("claimed_bonus", 0.0)
+        tot_bal = res.get("total_balance", claimed_bonus)
+        name = res.get("name") or res.get("nickname") or "Player"
+        uid = res.get("uid")
+
+        record = f"[{p_name}] {phone}:{pwd} | UID: {uid} | Name: {name} | ClaimedBonus: ₹{claimed_bonus:.2f} | Balance: ₹{tot_bal:.2f} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        save_account_record(ACCOUNTS_FILE, record)
+
+        rem_tokens = admin_manager.get_display_tokens(user_id)
+        bonus_badge = f"🎁 <b>Claimed Bind Bonus:</b> <b>₹{claimed_bonus:.2f}</b>\n" if claimed_bonus > 0 else "🎁 <b>Bind Bonus:</b> Auto-Processed\n"
+
+        success_text = (
+            f"🎉 <b>{p_name} Registration Successful!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Platform:</b> {p_name}\n"
+            f"• <b>Phone:</b> <code>{phone}</code>\n"
+            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>UID:</b> <code>{uid}</code>\n"
+            f"• <b>Nickname:</b> {name}\n"
+            f"{bonus_badge}"
+            f"• <b>Total Balance:</b> <b>₹{tot_bal:.2f}</b>\n"
+            f"• <b>Remaining Tokens:</b> <code>{rem_tokens}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Saved to your registry!"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.row(
+            types.InlineKeyboardButton("🌐 Check Other Platforms", callback_data=f"pchk:{phone}"),
+            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+        )
+        bot.edit_message_text(success_text, message.chat.id, status_msg.message_id, reply_markup=kb)
+    else:
+        err_msg = res.get("msg", "Registration failed")
+        kb = types.InlineKeyboardMarkup()
+        kb.row(
+            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}"),
+            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+        )
+        bot.edit_message_text(
+            f"❌ <b>Registration Failed on {p_name}!</b>\n\n"
+            f"• <b>Phone:</b> <code>{phone}</code>\n"
+            f"• <b>Error:</b> {err_msg}\n\n"
+            f"Token deduct nahi hua.",
+            message.chat.id,
+            status_msg.message_id,
+            reply_markup=kb
+        )
+    USER_STATES.pop(user_id, None)
+
+
+def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
+    user_id = call.from_user.id
+    if not admin_manager.has_enough_tokens(user_id, 1):
+        msg, kb = get_insufficient_tokens_msg(user_id, 1)
+        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+        return
+
+    bot.answer_callback_query(call.id, "Starting 1-by-1 sequential registration...")
+
+    status_msg = bot.send_message(
+        call.message.chat.id,
+        f"🔍 <b>Detecting available platforms for <code>{phone}</code>...</b>"
+    )
+
+    def _prepare():
+        results = MaxRummyClient.check_all_platforms(phone)
+        avail = [r for r in results if r.get("status") == "available"]
+        if not avail:
+            bot.edit_message_text(
+                f"⚠️ <b>Koi bhi platform fresh/available nahi mila mobile <code>{phone}</code> ke liye!</b>",
+                call.message.chat.id,
+                status_msg.message_id,
+                reply_markup=get_main_keyboard(user_id)
+            )
+            return
+
+        avail_pids = [r["platform_id"] for r in avail]
+        USER_STATES[user_id] = {
+            "action": "multi_platform_reg",
+            "phone": phone,
+            "queue": avail_pids,
+            "total_count": len(avail_pids),
+            "current_index": 0,
+            "success_count": 0,
+            "total_bonus": 0.0,
+            "results": []
+        }
+        trigger_next_multi_reg(call.message.chat.id, user_id, prev_msg_id=status_msg.message_id)
+
+    threading.Thread(target=_prepare, daemon=True).start()
+
+
+def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int] = None):
+    state = USER_STATES.get(user_id)
+    if not state or state.get("action") != "multi_platform_reg":
+        return
+
+    queue = state.get("queue", [])
+    phone = state["phone"]
+
+    # If queue is empty, finalize and display grand summary
+    if not queue:
+        success_cnt = state.get("success_count", 0)
+        tot_bonus = state.get("total_bonus", 0.0)
+        tot_platforms = state.get("total_count", 0)
+        results = state.get("results", [])
+
+        lines = [
+            f"🎊 <b>1-by-1 Sequential Registration Completed!</b>",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"📱 <b>Mobile:</b> <code>{phone}</code>",
+            f"✅ <b>Successfully Registered:</b> {success_cnt}/{tot_platforms}",
+            f"💰 <b>Total Bonus Claimed:</b> <b>₹{tot_bonus:.2f}</b>",
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        ]
+        for item in results:
+            p_name = item.get("name")
+            if item.get("ok"):
+                lines.append(f"• 🟢 <b>{p_name}</b>: UID <code>{item.get('uid')}</code> | Bonus ₹{item.get('bonus', 0.0):.2f}")
+            else:
+                lines.append(f"• 🔴 <b>{p_name}</b>: {item.get('msg')}")
+
+        lines.append(f"\nSaved to your registry file!")
+        summary_text = "\n".join(lines)
+
+        USER_STATES.pop(user_id, None)
+
+        if prev_msg_id:
+            try:
+                bot.edit_message_text(summary_text, chat_id, prev_msg_id, reply_markup=get_main_keyboard(user_id))
+                return
+            except Exception:
+                pass
+        bot.send_message(chat_id, summary_text, reply_markup=get_main_keyboard(user_id))
+        return
+
+    # Check token availability for next platform
+    if not admin_manager.has_enough_tokens(user_id, 1):
+        USER_STATES.pop(user_id, None)
+        msg_text = (
+            f"⚠️ <b>Tokens Khatam Ho Gaye!</b>\n\n"
+            f"Remaining platforms par register karne ke liye paryapt tokens nahi hain.\n"
+            f"Please contact @OwAtom ya @OwKarma recharge ke liye."
+        )
+        if prev_msg_id:
+            bot.edit_message_text(msg_text, chat_id, prev_msg_id, reply_markup=get_main_keyboard(user_id))
+        else:
+            bot.send_message(chat_id, msg_text, reply_markup=get_main_keyboard(user_id))
+        return
+
+    next_pid = queue.pop(0)
+    p_info = PLATFORMS_MAP.get(next_pid)
+    p_name = p_info["name"] if p_info else next_pid
+    state["current_index"] += 1
+    idx = state["current_index"]
+    tot = state["total_count"]
+    state["current_pid"] = next_pid
+    state["current_pname"] = p_name
+
+    # Send OTP
+    client = MaxRummyClient(platform=p_info)
+    otp_res = client.send_otp(phone)
+
+    if not otp_res.get("ok"):
+        state["results"].append({
+            "name": p_name,
+            "ok": False,
+            "msg": f"OTP send error: {otp_res.get('msg')}"
+        })
+        trigger_next_multi_reg(chat_id, user_id, prev_msg_id=prev_msg_id)
+        return
+
+    prompt_txt = (
+        f"⚡ <b>[{idx}/{tot}] Registering on {p_name}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 <b>Mobile:</b> <code>{phone}</code>\n"
+        f"📩 <b>OTP Sent Successfully!</b>\n\n"
+        f"Kripya received <b>OTP</b> bhejein (ya <code>OTP:Password</code>):\n\n"
+        f"<i>💡 Tips:</i>\n"
+        f"• Sirf OTP likhein to password auto-generate hoga.\n"
+        f"• Is platform ko chhodne ke liye <code>/skip</code> bhejein.\n"
+        f"• Process band karne ke liye <code>/cancel</code> bhejein."
+    )
+
+    if prev_msg_id:
+        try:
+            bot.edit_message_text(prompt_txt, chat_id, prev_msg_id)
+            bot.register_next_step_handler_by_chat_id(chat_id, step_multi_platform_otp)
+            return
+        except Exception:
+            pass
+
+    msg_obj = bot.send_message(chat_id, prompt_txt)
+    bot.register_next_step_handler(msg_obj, step_multi_platform_otp)
+
+
+def step_multi_platform_otp(message: types.Message):
+    user_id = message.from_user.id
+    state = USER_STATES.get(user_id)
+    if not state or state.get("action") != "multi_platform_reg":
+        bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    phone = state["phone"]
+    p_id = state.get("current_pid")
+    p_name = state.get("current_pname", "Platform")
+    p_info = PLATFORMS_MAP.get(p_id)
+
+    if message.text and message.text.startswith("/cancel"):
+        USER_STATES.pop(user_id, None)
+        bot.reply_to(message, "❌ Multi-platform registration stopped.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    if message.text and message.text.startswith("/skip"):
+        state["results"].append({
+            "name": p_name,
+            "ok": False,
+            "msg": "Skipped by user"
+        })
+        trigger_next_multi_reg(message.chat.id, user_id)
+        return
+
+    text = message.text.strip()
+    if ":" in text:
+        parts = text.split(":", 1)
+        otp = parts[0].strip()
+        pwd = parts[1].strip()
+    else:
+        otp = text
+        pwd = f"User{random.randint(10000, 99999)}"
+
+    status_msg = bot.reply_to(message, f"⏳ <b>[{p_name}]</b> Registering & claiming Welcome Bonus...")
+
+    client = MaxRummyClient(platform=p_info)
+    res = client.register(phone, pwd, otp)
+
+    if res.get("ok"):
+        admin_manager.deduct_tokens(user_id, 1)
+        claimed_bonus = res.get("claimed_bonus", 0.0)
+        tot_bal = res.get("total_balance", claimed_bonus)
+        uid = res.get("uid")
+        name = res.get("name") or res.get("nickname") or "Player"
+
+        state["success_count"] += 1
+        state["total_bonus"] += claimed_bonus
+        state["results"].append({
+            "name": p_name,
+            "ok": True,
+            "uid": uid,
+            "bonus": claimed_bonus,
+            "balance": tot_bal,
+            "phone": phone,
+            "pwd": pwd
+        })
+
+        record = f"[{p_name}] {phone}:{pwd} | UID: {uid} | Name: {name} | Bonus: ₹{claimed_bonus:.2f} | Balance: ₹{tot_bal:.2f} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        save_account_record(ACCOUNTS_FILE, record)
+
+        bot.edit_message_text(
+            f"✅ <b>{p_name} Registered Successfully!</b>\n"
+            f"• UID: <code>{uid}</code> | Bonus: <b>₹{claimed_bonus:.2f}</b> | Balance: ₹{tot_bal:.2f}",
+            message.chat.id,
+            status_msg.message_id
+        )
+    else:
+        err = res.get("msg", "Failed")
+        state["results"].append({
+            "name": p_name,
+            "ok": False,
+            "msg": err
+        })
+        bot.edit_message_text(
+            f"❌ <b>{p_name} Failed:</b> {err}\n<i>Token deduct nahi hua. Moving to next...</i>",
+            message.chat.id,
+            status_msg.message_id
+        )
+
+    # Move to next platform in queue!
+    trigger_next_multi_reg(message.chat.id, user_id)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Step Handlers: Registration (+ Auto Claim Bind Bonus)
+# ─────────────────────────────────────────────────────────────
+
+def step_reg_get_phone(message: types.Message):
+    if message.text and message.text.startswith("/cancel"):
+        bot.reply_to(message, "❌ Registration cancelled.", reply_markup=get_main_keyboard(message.from_user.id))
+        return
+
+    phone = clean_phone_number(message.text or "")
+    if len(phone) != 10:
+        msg = bot.reply_to(message, "❌ Invalid number! 10-digit number bhejein (ya /cancel karein):")
+        bot.register_next_step_handler(msg, step_reg_get_phone)
+        return
+
+    # Trigger OTP send
+    status_msg = bot.reply_to(message, f"⏳ Mobile <code>{phone}</code> par OTP bheja ja raha hai...")
+    client = MaxRummyClient()
+    res = client.send_otp(phone)
+
+    if not res.get("ok"):
+        bot.edit_message_text(
+            f"❌ <b>OTP Send Failed!</b>\nReason: {res.get('msg')}\n\nDobara koshish karein /start se.",
+            message.chat.id,
+            status_msg.message_id
+        )
+        return
+
+    USER_STATES[message.from_user.id] = {
+        "reg_phone": phone,
+        "otp_time": time.time()
+    }
+
+    bot.edit_message_text(
+        f"✅ <b>OTP Sent Successfully!</b>\n\n"
+        f"📱 <b>Mobile:</b> <code>{phone}</code>\n\n"
+        f"Kripya received <b>OTP aur Password</b> bhejein format me:\n"
+        f"<code>OTP:Password</code>\n\n"
+        f"<i>(Example: 123456:Pass@1234)</i>",
+        message.chat.id,
+        status_msg.message_id
+    )
+    bot.register_next_step_handler(status_msg, step_reg_finish)
+
+
+def step_reg_finish(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        USER_STATES.pop(user_id, None)
+        bot.reply_to(message, "❌ Registration cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    state = USER_STATES.get(user_id)
+    if not state or "reg_phone" not in state:
+        bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.")
+        return
+
+    text = message.text.strip()
+    if ":" in text:
+        parts = text.split(":", 1)
+        otp = parts[0].strip()
+        pwd = parts[1].strip()
+    else:
+        otp = text
+        pwd = f"User{random.randint(10000, 99999)}"
+
+    phone = state["reg_phone"]
+    status_msg = bot.reply_to(message, f"⏳ Registering <code>{phone}</code> on server & claiming Bind Bonus...")
+
+    client = MaxRummyClient()
+    res = client.register(phone, pwd, otp)
+
+    if res.get("ok"):
+        admin_manager.deduct_tokens(user_id, 1)
+        claimed_bonus = res.get("claimed_bonus", 0.0)
+        name = res.get("name") or res.get("nickname") or "Player"
+        record = f"{phone}:{pwd} | UID: {res.get('uid')} | Name: {name} | ClaimedBonus: ₹{claimed_bonus} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        save_account_record(ACCOUNTS_FILE, record)
+
+        rem_tokens = admin_manager.get_display_tokens(user_id)
+        bonus_badge = f"🎁 <b>Claimed Bind Bonus:</b> <b>₹{claimed_bonus:.2f}</b>\n" if claimed_bonus > 0 else "🎁 <b>Bind Bonus:</b> Auto-Processed\n"
+
+        success_text = (
+            f"🎉 <b>Number Bound & Bonus Claimed Successfully!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Phone:</b> <code>{phone}</code>\n"
+            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>UID:</b> <code>{res.get('uid')}</code>\n"
+            f"• <b>Nickname:</b> {name}\n"
+            f"{bonus_badge}"
+            f"• <b>Remaining Tokens:</b> <code>{rem_tokens}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Saved to your registry!"
+        )
+        bot.edit_message_text(success_text, message.chat.id, status_msg.message_id, reply_markup=get_main_keyboard(user_id))
+    else:
+        err_msg = res.get("msg", "Unknown registration error")
+        bot.edit_message_text(
+            f"❌ <b>Registration Failed!</b>\n\n"
+            f"• <b>Phone:</b> <code>{phone}</code>\n"
+            f"• <b>Error:</b> {err_msg}\n\n"
+            f"Token deduct nahi hua.",
+            message.chat.id,
+            status_msg.message_id,
+            reply_markup=get_main_keyboard(user_id)
+        )
+    USER_STATES.pop(user_id, None)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Step Handlers: Bind Phone & Claim Bonus
+# ─────────────────────────────────────────────────────────────
+
+def step_bind_phone_step1(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    text = message.text.strip()
+    if ":" not in text:
+        msg = bot.reply_to(message, "❌ Invalid format! Please enter <code>CurrentAccount:Password</code>:")
+        bot.register_next_step_handler(msg, step_bind_phone_step1)
+        return
+
+    parts = text.split(":", 1)
+    acc_user = parts[0].strip()
+    acc_pwd = parts[1].strip()
+
+    USER_STATES[user_id] = {
+        "bind_acc_user": acc_user,
+        "bind_acc_pwd": acc_pwd
+    }
+
+    msg = bot.reply_to(
+        message,
+        f"📱 Account <code>{acc_user}</code> selected!\n\n"
+        f"Ab wo <b>10-digit New Phone Number</b> bhejein jisko is account par bind karke bonus claim karna hai:"
+    )
+    bot.register_next_step_handler(msg, step_bind_phone_step2)
+
+
+def step_bind_phone_step2(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        USER_STATES.pop(user_id, None)
+        bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    phone = clean_phone_number(message.text or "")
+    if len(phone) != 10:
+        msg = bot.reply_to(message, "❌ Invalid number! 10-digit number bhejein:")
+        bot.register_next_step_handler(msg, step_bind_phone_step2)
+        return
+
+    status_msg = bot.reply_to(message, f"⏳ Mobile <code>{phone}</code> par OTP bheja ja raha hai...")
+    client = MaxRummyClient()
+    res = client.send_otp(phone)
+
+    if not res.get("ok"):
+        bot.edit_message_text(f"❌ OTP Send Failed: {res.get('msg')}", message.chat.id, status_msg.message_id)
+        USER_STATES.pop(user_id, None)
+        return
+
+    state = USER_STATES.get(user_id, {})
+    state["bind_phone"] = phone
+    USER_STATES[user_id] = state
+
+    bot.edit_message_text(
+        f"✅ <b>OTP Sent to {phone}!</b>\n\n"
+        f"Kripya <code>OTP:NewPassword</code> format me bhejein:\n"
+        f"<i>(Example: 123456:NewPass123)</i>",
+        message.chat.id,
+        status_msg.message_id
+    )
+    bot.register_next_step_handler(status_msg, step_bind_phone_step3)
+
+
+def step_bind_phone_step3(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        USER_STATES.pop(user_id, None)
+        bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    state = USER_STATES.get(user_id)
+    if not state or "bind_acc_user" not in state or "bind_phone" not in state:
+        bot.reply_to(message, "⚠️ Session expired. /start se dobara karein.")
+        return
+
+    text = message.text.strip()
+    if ":" in text:
+        parts = text.split(":", 1)
+        otp = parts[0].strip()
+        new_pwd = parts[1].strip()
+    else:
+        otp = text
+        new_pwd = f"User@{random.randint(1000, 9999)}"
+
+    acc_user = state["bind_acc_user"]
+    acc_pwd = state["bind_acc_pwd"]
+    phone_to_bind = state["bind_phone"]
+
+    status_msg = bot.reply_to(message, f"⏳ Binding <code>{phone_to_bind}</code> to <code>{acc_user}</code> & claiming bonus...")
+
+    client = MaxRummyClient()
+    res = client.bind_phone_and_claim(acc_user, acc_pwd, phone_to_bind, otp, new_pwd)
+
+    if res.get("ok"):
+        admin_manager.deduct_tokens(user_id, 1)
+        rem_tokens = admin_manager.get_display_tokens(user_id)
+        bal = res.get("balance", 0.0)
+
+        record = f"{phone_to_bind}:{new_pwd} | UID: {res.get('uid')} | Balance: ₹{bal} | BOUND"
+        save_account_record(ACCOUNTS_FILE, record)
+
+        report = (
+            f"🎉 <b>Phone Bound & Bonus Claimed Successfully!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 <b>Bound Phone:</b> <code>{phone_to_bind}</code>\n"
+            f"🔑 <b>New Password:</b> <code>{new_pwd}</code>\n"
+            f"🆔 <b>UID:</b> <code>{res.get('uid')}</code>\n"
+            f"💰 <b>Total Balance:</b> <b>₹{bal:,.2f}</b>\n"
+            f"🎟️ <b>Tokens Remaining:</b> <code>{rem_tokens}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        bot.edit_message_text(report, message.chat.id, status_msg.message_id, reply_markup=get_main_keyboard(user_id))
+    else:
+        bot.edit_message_text(
+            f"❌ <b>Binding Failed!</b>\n\n"
+            f"• <b>Reason:</b> {res.get('msg')}\n"
+            f"Token deduct nahi hua.",
+            message.chat.id,
+            status_msg.message_id,
+            reply_markup=get_main_keyboard(user_id)
+        )
+    USER_STATES.pop(user_id, None)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Step Handlers: Single Bonus Claim
+# ─────────────────────────────────────────────────────────────
+
+def step_claim_single_account(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    text = message.text.strip()
+    if ":" not in text:
+        msg = bot.reply_to(message, "❌ Invalid format! Please enter <code>Phone:Password</code>:")
+        bot.register_next_step_handler(msg, step_claim_single_account)
+        return
+
+    parts = text.split(":", 1)
+    phone = clean_phone_number(parts[0])
+    password = parts[1].strip()
+
+    status_msg = bot.reply_to(message, f"🎁 Processing bonuses for <code>{phone}</code>...")
+
+    client = MaxRummyClient()
+    res = client.claim_bonuses(phone, password)
+
+    if res.get("ok"):
+        admin_manager.deduct_tokens(user_id, 1)
+        rem_tokens = admin_manager.get_display_tokens(user_id)
+
+        bal_before = res.get("balance_before", 0.0)
+        bal_after = res.get("balance_after", 0.0)
+        claimed = res.get("claimed_amount", 0.0)
+        details = res.get("details", [])
+        details_txt = "\n".join([f"• {d}" for d in details]) if details else "• Bonuses collected"
+
+        report = (
+            f"🎉 <b>Bonus Claim Processed!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 <b>Phone:</b> <code>{phone}</code>\n"
+            f"🆔 <b>UID:</b> <code>{res.get('uid')}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Bonus Summary:</b>\n"
+            f"{details_txt}\n\n"
+            f"💰 <b>Balance Before:</b> ₹{bal_before:,.2f}\n"
+            f"🎁 <b>Claimed Bonus:</b> <b>+₹{claimed:,.2f}</b>\n"
+            f"💵 <b>Current Balance:</b> <b>₹{bal_after:,.2f}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎟️ <b>Tokens Remaining:</b> <code>{rem_tokens}</code>"
+        )
+        bot.edit_message_text(report, message.chat.id, status_msg.message_id, reply_markup=get_main_keyboard(user_id))
+    else:
+        bot.edit_message_text(
+            f"❌ <b>Bonus Claim Failed for {phone}</b>\n\n"
+            f"• <b>Reason:</b> {res.get('msg')}\n"
+            f"Token deduct nahi hua.",
+            message.chat.id,
+            status_msg.message_id,
+            reply_markup=get_main_keyboard(user_id)
+        )
+
+
+# ─────────────────────────────────────────────────────────────
+#  Step Handlers: Bulk Bonus Claim
+# ─────────────────────────────────────────────────────────────
+
+def step_claim_bulk_accounts(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    raw_text = ""
+    if message.document:
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+            raw_text = downloaded.decode("utf-8", errors="ignore")
+        except Exception as e:
+            bot.reply_to(message, f"❌ File reading error: {e}")
+            return
+    elif message.text:
+        raw_text = message.text
+
+    accounts: List[Tuple[str, str]] = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if ":" in line:
+            p, pw = line.split(":", 1)
+            c_phone = clean_phone_number(p)
+            if len(c_phone) == 10 and pw.strip():
+                accounts.append((c_phone, pw.strip()))
+
+    if not accounts:
+        msg = bot.reply_to(message, "❌ Koi valid accounts nahi mile! Format: <code>Phone:Password</code>:")
+        bot.register_next_step_handler(msg, step_claim_bulk_accounts)
+        return
+
+    total_accs = len(accounts)
+    user_tokens = admin_manager.get_tokens(user_id)
+
+    if not admin_manager.is_free_mode() and user_tokens < total_accs:
+        txt, kb = get_insufficient_tokens_msg(user_id, total_accs)
+        bot.reply_to(
+            message,
+            f"⚠️ <b>Insufficient Tokens for Bulk Claim!</b>\n\n"
+            f"• <b>Accounts submitted:</b> <code>{total_accs}</code>\n"
+            f"• <b>Your Tokens:</b> <code>{user_tokens}</code>\n\n"
+            f"Kripya recharge ke liye admins se contact karein:\n"
+            f"👉 <b>@OwAtom</b> | <b>@OwKarma</b>",
+            reply_markup=kb
+        )
+        return
+
+    status_msg = bot.reply_to(message, f"⚡ <b>Bulk Bonus Claim Started!</b>\nTotal Accounts: {total_accs}\nProcessing bonuses concurrently...")
+
+    progress_lock = threading.Lock()
+    last_update_time = [time.time()]
+
+    def on_progress(done, total, res):
+        with progress_lock:
+            now = time.time()
+            if (now - last_update_time[0] > 2.5) or (done == total):
+                last_update_time[0] = now
+                pct = int((done / total) * 100)
+                bar = "█" * (pct // 10) + "░" * (10 - (pct // 10))
+                try:
+                    bot.edit_message_text(
+                        f"⚡ <b>Bulk Claiming Progress...</b>\n\n"
+                        f"<code>[{bar}]</code> {pct}%\n"
+                        f"• Processed: {done}/{total}\n"
+                        f"• Last Status: {res.get('phone')} -> {res.get('msg')}",
+                        message.chat.id,
+                        status_msg.message_id
+                    )
+                except Exception:
+                    pass
+
+    def _run_bulk_claim():
+        bulk_res = bulk_claim_bonuses(accounts, max_workers=5, progress_callback=on_progress)
+        success_cnt = bulk_res["success"]
+        failed_cnt = bulk_res["failed"]
+        total_claimed = bulk_res["total_claimed"]
+
+        if success_cnt > 0 and not admin_manager.is_free_mode():
+            admin_manager.deduct_tokens(user_id, success_cnt)
+
+        rem_tokens = admin_manager.get_display_tokens(user_id)
+
+        report_buffer = io.StringIO()
+        report_buffer.write(f"=== MAXRUMMY & YONOGAMES BULK BONUS CLAIM REPORT ===\n")
+        report_buffer.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        report_buffer.write(f"Total: {total_accs} | Success: {success_cnt} | Failed: {failed_cnt}\n")
+        report_buffer.write(f"Total Bonus Collected: INR {total_claimed:.2f}\n")
+        report_buffer.write("=" * 60 + "\n\n")
+
+        for r in bulk_res["results"]:
+            phone = r.get("phone")
+            pwd = r.get("password")
+            if r.get("ok"):
+                c_amt = r.get("claimed_amount", 0.0)
+                bal = r.get("balance_after", 0.0)
+                uid = r.get("uid")
+                report_buffer.write(f"{phone}:{pwd} | UID: {uid} | Claimed: +₹{c_amt:.2f} | Balance: ₹{bal:.2f} | SUCCESS\n")
+            else:
+                report_buffer.write(f"{phone}:{pwd} | Status: FAILED ({r.get('msg')})\n")
+
+        report_bytes = report_buffer.getvalue().encode("utf-8")
+        bio = io.BytesIO(report_bytes)
+        bio.name = f"Bonus_Claim_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        summary_text = (
+            f"🎉 <b>Bulk Bonus Claim Completed!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Total Processed:</b> <code>{total_accs}</code>\n"
+            f"• <b>Successfully Claimed:</b> <code>{success_cnt}</code>\n"
+            f"• <b>Failed:</b> <code>{failed_cnt}</code>\n"
+            f"• <b>Total Bonus Collected:</b> <b>₹{total_claimed:,.2f}</b>\n"
+            f"• <b>Tokens Deducted:</b> <code>{success_cnt}</code>\n"
+            f"• <b>Remaining Tokens:</b> <code>{rem_tokens}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Full detailed report file attach ki gayi hai:"
+        )
+
+        try:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+        except Exception:
+            pass
+
+        bot.send_document(
+            message.chat.id,
+            bio,
+            caption=summary_text,
+            reply_markup=get_main_keyboard(user_id)
+        )
+
+    t = threading.Thread(target=_run_bulk_claim, daemon=True)
+    t.start()
+
+
+# ─────────────────────────────────────────────────────────────
+#  Step Handlers: Single Balance Check
+# ─────────────────────────────────────────────────────────────
+
+def step_check_single_account(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    text = message.text.strip()
+    if ":" not in text:
+        msg = bot.reply_to(message, "❌ Invalid format! Please enter <code>Phone:Password</code> (e.g. <code>9876543210:Pass123</code>):")
+        bot.register_next_step_handler(msg, step_check_single_account)
+        return
+
+    parts = text.split(":", 1)
+    phone = clean_phone_number(parts[0])
+    password = parts[1].strip()
+
+    status_msg = bot.reply_to(message, f"🔍 Checking account <code>{phone}</code>...")
+
+    client = MaxRummyClient()
+    res = client.login(phone, password)
+
+    if res.get("ok"):
+        admin_manager.deduct_tokens(user_id, 1)
+        rem_tokens = admin_manager.get_display_tokens(user_id)
+
+        coin = res.get("coin", 0.0)
+        dcoin = res.get("dcoin", 0.0)
+        ecoin = res.get("ecoin", 0.0)
+        total = res.get("total_balance", 0.0)
+        uid = res.get("uid")
+        nick = res.get("nickname")
+        vip = res.get("vip", 0)
+
+        record = f"{phone}:{password} | Total: ₹{total:.2f} | Cash: ₹{coin:.2f} | Deposit: ₹{dcoin:.2f} | Bonus: ₹{ecoin:.2f} | UID: {uid} | VIP: {vip}"
+        save_account_record(CHECKED_ACCOUNTS_FILE, record)
+
+        report = (
+            f"✅ <b>Account Login & Balance Verified!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 <b>Phone:</b> <code>{phone}</code>\n"
+            f"🆔 <b>UID:</b> <code>{uid}</code>\n"
+            f"👤 <b>Nickname:</b> {nick}\n"
+            f"👑 <b>VIP Level:</b> VIP {vip}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💵 <b>TOTAL BALANCE:</b> <b>₹{total:,.2f}</b>\n"
+            f"• <b>Withdrawable Cash:</b> ₹{coin:,.2f}\n"
+            f"• <b>Deposit Balance:</b> ₹{dcoin:,.2f}\n"
+            f"• <b>Bonus Coins:</b> ₹{ecoin:,.2f}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎟️ <b>Tokens Remaining:</b> <code>{rem_tokens}</code>"
+        )
+        bot.edit_message_text(report, message.chat.id, status_msg.message_id, reply_markup=get_main_keyboard(user_id))
+    else:
+        err = res.get("msg", "Authentication failed")
+        bot.edit_message_text(
+            f"❌ <b>Login Failed for {phone}</b>\n\n"
+            f"• <b>Reason:</b> {err}\n"
+            f"<i>Token deduct nahi hua.</i>",
+            message.chat.id,
+            status_msg.message_id,
+            reply_markup=get_main_keyboard(user_id)
+        )
+
+
+# ─────────────────────────────────────────────────────────────
+#  Step Handlers: Bulk Balance Check
+# ─────────────────────────────────────────────────────────────
+
+def step_check_bulk_accounts(message: types.Message):
+    user_id = message.from_user.id
+    if message.text and message.text.startswith("/cancel"):
+        bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    raw_text = ""
+    if message.document:
+        try:
+            file_info = bot.get_file(message.document.file_id)
+            downloaded = bot.download_file(file_info.file_path)
+            raw_text = downloaded.decode("utf-8", errors="ignore")
+        except Exception as e:
+            bot.reply_to(message, f"❌ File reading error: {e}")
+            return
+    elif message.text:
+        raw_text = message.text
+
+    accounts: List[Tuple[str, str]] = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if ":" in line:
+            p, pw = line.split(":", 1)
+            c_phone = clean_phone_number(p)
+            if len(c_phone) == 10 and pw.strip():
+                accounts.append((c_phone, pw.strip()))
+
+    if not accounts:
+        msg = bot.reply_to(message, "❌ Koi valid accounts nahi mile! Format: <code>Phone:Password</code>:")
+        bot.register_next_step_handler(msg, step_check_bulk_accounts)
+        return
+
+    total_accs = len(accounts)
+    user_tokens = admin_manager.get_tokens(user_id)
+
+    if not admin_manager.is_free_mode() and user_tokens < total_accs:
+        txt, kb = get_insufficient_tokens_msg(user_id, total_accs)
+        bot.reply_to(
+            message,
+            f"⚠️ <b>Insufficient Tokens for Bulk Check!</b>\n\n"
+            f"• <b>Accounts submitted:</b> <code>{total_accs}</code>\n"
+            f"• <b>Your Tokens:</b> <code>{user_tokens}</code>\n\n"
+            f"Kripya recharge ke liye admins se contact karein:\n"
+            f"👉 <b>@OwAtom</b> | <b>@OwKarma</b>",
+            reply_markup=kb
+        )
+        return
+
+    status_msg = bot.reply_to(message, f"🚀 <b>Bulk Check Started!</b>\nTotal Accounts: {total_accs}\nChecking with concurrent threads...")
+
+    progress_lock = threading.Lock()
+    last_update_time = [time.time()]
+
+    def on_progress(done, total, res):
+        with progress_lock:
+            now = time.time()
+            if (now - last_update_time[0] > 2.5) or (done == total):
+                last_update_time[0] = now
+                pct = int((done / total) * 100)
+                bar = "█" * (pct // 10) + "░" * (10 - (pct // 10))
+                try:
+                    bot.edit_message_text(
+                        f"📊 <b>Bulk Checking Progress...</b>\n\n"
+                        f"<code>[{bar}]</code> {pct}%\n"
+                        f"• Processed: {done}/{total}\n"
+                        f"• Last Status: {res.get('phone')} -> {res.get('msg')}",
+                        message.chat.id,
+                        status_msg.message_id
+                    )
+                except Exception:
+                    pass
+
+    def _run_bulk():
+        bulk_res = bulk_check_accounts(accounts, max_workers=5, progress_callback=on_progress)
+        success_cnt = bulk_res["success"]
+        failed_cnt = bulk_res["failed"]
+        total_cash = bulk_res["total_cash"]
+
+        if success_cnt > 0 and not admin_manager.is_free_mode():
+            admin_manager.deduct_tokens(user_id, success_cnt)
+
+        rem_tokens = admin_manager.get_display_tokens(user_id)
+
+        report_buffer = io.StringIO()
+        report_buffer.write(f"=== MAXRUMMY & YONOGAMES BULK BALANCE REPORT ===\n")
+        report_buffer.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        report_buffer.write(f"Total: {total_accs} | Success: {success_cnt} | Failed: {failed_cnt}\n")
+        report_buffer.write(f"Total Cash Found: INR {total_cash:.2f}\n")
+        report_buffer.write("=" * 60 + "\n\n")
+
+        for r in bulk_res["results"]:
+            phone = r.get("phone")
+            pwd = r.get("password")
+            if r.get("ok"):
+                c = r.get("coin", 0.0)
+                d = r.get("dcoin", 0.0)
+                e = r.get("ecoin", 0.0)
+                tot = r.get("total_balance", 0.0)
+                u = r.get("uid")
+                v = r.get("vip", 0)
+                report_buffer.write(f"{phone}:{pwd} | Total: ₹{tot:.2f} (Cash: ₹{c:.2f}, Dep: ₹{d:.2f}, Bonus: ₹{e:.2f}) | UID: {u} | VIP: {v} | ACTIVE\n")
+            else:
+                report_buffer.write(f"{phone}:{pwd} | Status: FAILED ({r.get('msg')})\n")
+
+        report_bytes = report_buffer.getvalue().encode("utf-8")
+        bio = io.BytesIO(report_bytes)
+        bio.name = f"Balance_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        summary_text = (
+            f"🎉 <b>Bulk Balance Check Completed!</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Total Checked:</b> <code>{total_accs}</code>\n"
+            f"• <b>Active / Valid:</b> <code>{success_cnt}</code>\n"
+            f"• <b>Failed / Invalid:</b> <code>{failed_cnt}</code>\n"
+            f"• <b>Total Cash Found:</b> <b>₹{total_cash:,.2f}</b>\n"
+            f"• <b>Tokens Deducted:</b> <code>{success_cnt}</code>\n"
+            f"• <b>Remaining Tokens:</b> <code>{rem_tokens}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Detailed report file neeche attach ki gayi hai:"
+        )
+
+        try:
+            bot.delete_message(message.chat.id, status_msg.message_id)
+        except Exception:
+            pass
+
+        bot.send_document(
+            message.chat.id,
+            bio,
+            caption=summary_text,
+            reply_markup=get_main_keyboard(user_id)
+        )
+
+    t = threading.Thread(target=_run_bulk, daemon=True)
+    t.start()
+
+
+# ─────────────────────────────────────────────────────────────
+#  Admin Slash Commands
+# ─────────────────────────────────────────────────────────────
+
+@bot.message_handler(commands=["addtokens"])
+def cmd_add_tokens(message: types.Message):
+    user_id = message.from_user.id
+    if not admin_manager.is_admin(user_id):
+        return
+    parts = message.text.split()
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        bot.reply_to(message, "Usage: <code>/addtokens &lt;user_id&gt; &lt;amount&gt;</code>")
+        return
+    target_uid = int(parts[1])
+    amt = int(parts[2])
+    admin_manager.add_tokens(target_uid, amt)
+    new_bal = admin_manager.get_tokens(target_uid)
+    bot.reply_to(message, f"✅ Added {amt} tokens to <code>{target_uid}</code>. New balance: <b>{new_bal}</b>.")
+
+
+@bot.message_handler(commands=["settokens"])
+def cmd_set_tokens(message: types.Message):
+    user_id = message.from_user.id
+    if not admin_manager.is_super_admin(user_id):
+        return
+    parts = message.text.split()
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        bot.reply_to(message, "Usage: <code>/settokens &lt;user_id&gt; &lt;amount&gt;</code>")
+        return
+    target_uid = int(parts[1])
+    amt = int(parts[2])
+    admin_manager.set_tokens(target_uid, amt)
+    bot.reply_to(message, f"✅ Set tokens for <code>{target_uid}</code> to <b>{amt}</b>.")
+
+
+@bot.message_handler(commands=["broadcast"])
+def cmd_broadcast(message: types.Message):
+    user_id = message.from_user.id
+    if not admin_manager.is_super_admin(user_id):
+        return
+    text = message.text.replace("/broadcast", "", 1).strip()
+    if not text:
+        bot.reply_to(message, "Usage: <code>/broadcast &lt;message&gt;</code>")
+        return
+    targets = admin_manager.get_all_target_chat_ids()
+    sent = 0
+    for cid in targets:
+        try:
+            bot.send_message(cid, f"📢 <b>Announcement:</b>\n\n{text}")
+            sent += 1
+            time.sleep(0.05)
+        except Exception:
+            pass
+    bot.reply_to(message, f"✅ Broadcast sent to {sent} users.")
+
+
+# ─────────────────────────────────────────────────────────────
+#  Run Engine
+# ─────────────────────────────────────────────────────────────
+
+def main():
+    log("==========================================")
+    log("  Starting MaxRummy & YonoGames Auto Bot  ")
+    log(f"  Owner: {OWNER_ID} (@OwAtom)")
+    log(f"  Token: {BOT_TOKEN[:10]}...{BOT_TOKEN[-5:]}")
+    log("==========================================")
+    while True:
+        try:
+            bot.infinity_polling(timeout=25, long_polling_timeout=20)
+        except Exception as e:
+            log(f"Bot polling exception: {e}")
+            time.sleep(3)
+
+
+if __name__ == "__main__":
+    main()
