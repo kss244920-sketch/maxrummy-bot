@@ -53,6 +53,7 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 USER_STATES_LOCK = threading.RLock()
 USER_STATES: Dict[int, dict] = {}
 LAST_USER_ACTION: Dict[int, float] = {}
+CHECK_CACHE: Dict[int, dict] = {}
 
 
 def set_user_state(user_id: int, state: dict):
@@ -446,6 +447,16 @@ def on_callback_query(call: types.CallbackQuery):
             phone = parts[1]
             initiate_multi_platform_reg(call, phone)
 
+    elif data.startswith("psel1:"):
+        phone = data.split(":", 1)[1]
+        bot.answer_callback_query(call.id, "Loading platforms...")
+        render_select_single_platform(call.message.chat.id, user_id, phone, message_id=call.message.message_id)
+
+    elif data.startswith("preport:"):
+        phone = data.split(":", 1)[1]
+        bot.answer_callback_query(call.id, "Back to report...")
+        render_platform_report(call.message.chat.id, user_id, phone, message_id=call.message.message_id)
+
     # ─────────────────────────────────────────────────────────────
     #  Bind Number & Get Bonus Flow (New Registration + Bind Gift)
     # ─────────────────────────────────────────────────────────────
@@ -771,6 +782,122 @@ def step_check_platforms_get_phone(message: types.Message):
     execute_platform_check(message.chat.id, user_id, phone, reply_to_msg_id=message.message_id)
 
 
+def build_platform_report(clean_phone: str, results: List[Dict[str, Any]]) -> Tuple[str, types.InlineKeyboardMarkup]:
+    avail = [r for r in results if r.get("status") == "available"]
+    reg = [r for r in results if r.get("status") == "registered"]
+    cooldown = [r for r in results if r.get("status") == "cooldown"]
+    errors = [r for r in results if r.get("status") not in ("available", "registered", "cooldown")]
+
+    lines = [
+        f"🌐 <b>Multi-Platform Status Report</b>",
+        f"━━━━━━━━━━━━━━━━━━━━━━",
+        f"📱 <b>Mobile:</b> <code>{clean_phone}</code>",
+        f"📊 <b>Total Checked:</b> {len(results)} Platforms\n"
+    ]
+
+    if avail:
+        lines.append(f"🟢 <b>Fresh / Available for Registration ({len(avail)}):</b>")
+        for r in avail:
+            lines.append(f"  • <b>{html.escape(r['name'])}</b> <i>(Fresh)</i>")
+        lines.append("")
+
+    if reg:
+        lines.append(f"🔴 <b>Already Registered ({len(reg)}):</b>")
+        for r in reg:
+            lines.append(f"  • {html.escape(r['name'])}")
+        lines.append("")
+
+    if cooldown:
+        lines.append(f"⏳ <b>Number on Cooldown ({len(cooldown)}):</b>")
+        for r in cooldown:
+            m = html.escape(str(r.get("msg", "Cooldown")))
+            lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
+        lines.append("")
+
+    if errors:
+        lines.append(f"⚠️ <b>Other / Offline ({len(errors)}):</b>")
+        for r in errors:
+            m = html.escape(str(r.get("msg", "Offline")))
+            lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+    if avail:
+        lines.append(f"🟢 <b>{len(avail)} Fresh Platforms Available!</b>\n"
+                     f"• Sabhi par auto-register karne ke liye <b>1 by 1 All</b> dabayein.\n"
+                     f"• Kisi specific app par register karne ke liye <b>Select 1 Platform</b> dabayein:")
+    else:
+        lines.append("⚠️ Is number par koi bhi platform fresh/available nahi mila.")
+
+    text = "\n".join(lines)
+
+    kb = types.InlineKeyboardMarkup()
+    if avail:
+        kb.row(types.InlineKeyboardButton(f"⚡ 1 by 1 All ({len(avail)} Platforms)", callback_data=f"pregall:{clean_phone}", style="success"))
+        kb.row(types.InlineKeyboardButton(f"🎯 Select 1 Platform to Claim Bonus", callback_data=f"psel1:{clean_phone}", style="primary"))
+
+    kb.row(
+        types.InlineKeyboardButton("🔄 Re-check", callback_data=f"pchk:{clean_phone}", style="primary"),
+        types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
+    )
+    return text, kb
+
+
+def render_select_single_platform(chat_id: int, user_id: int, phone: str, message_id: int):
+    clean_phone = clean_phone_number(phone)
+    cached = CHECK_CACHE.get(user_id)
+    if cached and cached.get("phone") == clean_phone and time.time() - cached.get("ts", 0) < 600:
+        results = cached.get("results", [])
+    else:
+        results = MaxRummyClient.check_all_platforms(clean_phone, timeout=3.5)
+        CHECK_CACHE[user_id] = {"phone": clean_phone, "results": results, "ts": time.time()}
+
+    avail = [r for r in results if r.get("status") == "available"]
+    if not avail:
+        safe_edit_or_send(
+            chat_id,
+            f"⚠️ <b>Koi bhi platform fresh/available nahi mila mobile <code>{clean_phone}</code> ke liye!</b>",
+            reply_markup=get_main_keyboard(user_id),
+            message_id=message_id
+        )
+        return
+
+    text = (
+        f"🎯 <b>Select 1 Platform to Claim Bonus</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 <b>Mobile:</b> <code>{clean_phone}</code>\n"
+        f"🟢 <b>Available Unregistered Platforms ({len(avail)}):</b>\n\n"
+        f"Niche kisi bhi platform par click karein, bot OTP send karke Welcome Bonus claim karega:"
+    )
+
+    kb = types.InlineKeyboardMarkup()
+    p_buttons = []
+    for r in avail:
+        pid = r["platform_id"]
+        pname = r["name"]
+        p_buttons.append(types.InlineKeyboardButton(f"🎁 {pname}", callback_data=f"preg:{pid}:{clean_phone}", style="success"))
+
+    for i in range(0, len(p_buttons), 2):
+        kb.row(*p_buttons[i:i+2])
+
+    kb.row(
+        types.InlineKeyboardButton("🔙 Back to Report", callback_data=f"preport:{clean_phone}", style="primary"),
+        types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
+    )
+
+    safe_edit_or_send(chat_id, text, reply_markup=kb, message_id=message_id)
+
+
+def render_platform_report(chat_id: int, user_id: int, phone: str, message_id: int):
+    clean_phone = clean_phone_number(phone)
+    cached = CHECK_CACHE.get(user_id)
+    if cached and cached.get("phone") == clean_phone:
+        text, kb = build_platform_report(clean_phone, cached["results"])
+        safe_edit_or_send(chat_id, text, reply_markup=kb, message_id=message_id)
+    else:
+        execute_platform_check(chat_id, user_id, clean_phone, message_id=message_id)
+
+
 def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_id: Optional[int] = None, message_id: Optional[int] = None):
     clean_phone = clean_phone_number(phone)
     if len(clean_phone) != 10:
@@ -794,72 +921,14 @@ def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_
         try:
             log(f"Starting parallel check across {len(PLATFORMS_LIST)} platforms for {clean_phone}...")
             results = MaxRummyClient.check_all_platforms(clean_phone, timeout=3.5)
+            CHECK_CACHE[user_id] = {"phone": clean_phone, "results": results, "ts": time.time()}
             avail = [r for r in results if r.get("status") == "available"]
             reg = [r for r in results if r.get("status") == "registered"]
             cooldown = [r for r in results if r.get("status") == "cooldown"]
             errors = [r for r in results if r.get("status") not in ("available", "registered", "cooldown")]
             log(f"Check done for {clean_phone}: {len(avail)} fresh, {len(reg)} registered, {len(cooldown)} cooldown, {len(errors)} err")
 
-            lines = [
-                f"🌐 <b>Multi-Platform Status Report</b>",
-                f"━━━━━━━━━━━━━━━━━━━━━━",
-                f"📱 <b>Mobile:</b> <code>{clean_phone}</code>",
-                f"📊 <b>Total Checked:</b> {len(results)} Platforms\n"
-            ]
-
-            if avail:
-                lines.append(f"🟢 <b>Fresh / Available for Registration ({len(avail)}):</b>")
-                for r in avail:
-                    lines.append(f"  • <b>{html.escape(r['name'])}</b> <i>(Fresh)</i>")
-                lines.append("")
-
-            if reg:
-                lines.append(f"🔴 <b>Already Registered ({len(reg)}):</b>")
-                for r in reg:
-                    lines.append(f"  • {html.escape(r['name'])}")
-                lines.append("")
-
-            if cooldown:
-                lines.append(f"⏳ <b>Number on Cooldown ({len(cooldown)}):</b>")
-                for r in cooldown:
-                    m = html.escape(str(r.get("msg", "Cooldown")))
-                    lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
-                lines.append("")
-
-            if errors:
-                lines.append(f"⚠️ <b>Other / Offline ({len(errors)}):</b>")
-                for r in errors:
-                    m = html.escape(str(r.get("msg", "Offline")))
-                    lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
-                lines.append("")
-
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-            if avail:
-                lines.append("Platform select karke OTP mangwayein ya <b>1 by 1 All</b> se sabhi par register karein:")
-            else:
-                lines.append("⚠️ Is number par koi bhi platform fresh/available nahi mila.")
-
-            text = "\n".join(lines)
-
-            kb = types.InlineKeyboardMarkup()
-            if avail:
-                p_buttons = []
-                for r in avail:
-                    pid = r["platform_id"]
-                    pname = r["name"]
-                    p_buttons.append(types.InlineKeyboardButton(f"🎁 {pname}", callback_data=f"preg:{pid}:{clean_phone}", style="success"))
-
-                for i in range(0, len(p_buttons), 2):
-                    kb.row(*p_buttons[i:i+2])
-
-                if len(avail) > 1:
-                    kb.row(types.InlineKeyboardButton(f"⚡ 1 by 1 All ({len(avail)} Platforms)", callback_data=f"pregall:{clean_phone}", style="primary"))
-
-            kb.row(
-                types.InlineKeyboardButton("🔄 Re-check", callback_data=f"pchk:{clean_phone}", style="primary"),
-                types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
-            )
-
+            text, kb = build_platform_report(clean_phone, results)
             safe_edit_or_send(chat_id, text, reply_markup=kb, message_id=status_msg_id)
         except Exception as e:
             import traceback
@@ -901,7 +970,10 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
     if not res.get("ok"):
         kb = types.InlineKeyboardMarkup()
         kb.row(
-            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}", style="primary"),
+            types.InlineKeyboardButton("🎯 Select Another Platform", callback_data=f"psel1:{phone}", style="primary"),
+            types.InlineKeyboardButton("🔄 Re-check", callback_data=f"pchk:{phone}", style="primary")
+        )
+        kb.row(
             types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
         safe_edit_or_send(
@@ -1005,7 +1077,11 @@ def step_platform_otp_finish(message: types.Message):
         )
         kb = types.InlineKeyboardMarkup()
         kb.row(
-            types.InlineKeyboardButton("🌐 Check Other Platforms", callback_data=f"pchk:{phone}", style="primary"),
+            types.InlineKeyboardButton("🎯 Select Another Platform", callback_data=f"psel1:{phone}", style="success"),
+            types.InlineKeyboardButton("⚡ 1 by 1 All", callback_data=f"pregall:{phone}", style="primary")
+        )
+        kb.row(
+            types.InlineKeyboardButton("📊 Status Report", callback_data=f"preport:{phone}", style="primary"),
             types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
         safe_edit_or_send(message.chat.id, success_text, reply_markup=kb, message_id=status_msg.message_id)
@@ -1013,7 +1089,10 @@ def step_platform_otp_finish(message: types.Message):
         err_msg = html.escape(str(res.get("msg", "Registration failed")))
         kb = types.InlineKeyboardMarkup()
         kb.row(
-            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}", style="primary"),
+            types.InlineKeyboardButton("🎯 Try Another Platform", callback_data=f"psel1:{phone}", style="primary"),
+            types.InlineKeyboardButton("📊 Status Report", callback_data=f"preport:{phone}", style="primary")
+        )
+        kb.row(
             types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
         safe_edit_or_send(
