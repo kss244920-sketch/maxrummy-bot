@@ -908,7 +908,7 @@ class MaxRummyClient:
         return asyncio.run(self.bind_phone_and_claim_async(guest_user, guest_pass, phone, otp, new_pass))
 
     @classmethod
-    async def check_all_platforms_async(cls, phone: str, timeout: float = 2.5) -> List[Dict[str, Any]]:
+    async def check_all_platforms_async(cls, phone: str, timeout: float = 6.0) -> List[Dict[str, Any]]:
         """
         Pings all registered Cocos / Yono platforms in parallel via WebSocket LOGIN (c=1, t=9).
         Categorizes each platform:
@@ -992,7 +992,7 @@ class MaxRummyClient:
                     "platform": p
                 }
 
-        sem = asyncio.Semaphore(25)
+        sem = asyncio.Semaphore(12)
 
         async def _check_single_safe(p: Dict[str, Any]) -> Dict[str, Any]:
             async with sem:
@@ -1023,7 +1023,7 @@ class MaxRummyClient:
         return await asyncio.gather(*tasks)
 
     @classmethod
-    def check_all_platforms(cls, phone: str, timeout: float = 2.5) -> List[Dict[str, Any]]:
+    def check_all_platforms(cls, phone: str, timeout: float = 6.0) -> List[Dict[str, Any]]:
         return asyncio.run(cls.check_all_platforms_async(phone, timeout=timeout))
 
 

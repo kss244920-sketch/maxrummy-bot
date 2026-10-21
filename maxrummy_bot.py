@@ -892,7 +892,7 @@ def render_select_single_platform(chat_id: int, user_id: int, phone: str, messag
     if cached and cached.get("phone") == clean_phone and time.time() - cached.get("ts", 0) < 600:
         results = cached.get("results", [])
     else:
-        results = MaxRummyClient.check_all_platforms(clean_phone, timeout=2.5)
+        results = MaxRummyClient.check_all_platforms(clean_phone, timeout=6.0)
         CHECK_CACHE[user_id] = {"phone": clean_phone, "results": results, "ts": time.time()}
 
     avail = [r for r in results if r.get("status") == "available"]
@@ -963,7 +963,7 @@ def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_
     def _worker():
         try:
             log(f"Starting parallel check across {len(PLATFORMS_LIST)} platforms for {clean_phone}...")
-            results = MaxRummyClient.check_all_platforms(clean_phone, timeout=2.5)
+            results = MaxRummyClient.check_all_platforms(clean_phone, timeout=6.0)
             CHECK_CACHE[user_id] = {"phone": clean_phone, "results": results, "ts": time.time()}
             avail = [r for r in results if r.get("status") == "available"]
             reg = [r for r in results if r.get("status") == "registered"]
@@ -1166,7 +1166,7 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
 
     def _prepare():
         log(f"Initiating multi-platform registration for {phone}...")
-        results = MaxRummyClient.check_all_platforms(phone, timeout=2.5)
+        results = MaxRummyClient.check_all_platforms(phone, timeout=6.0)
         avail = [r for r in results if r.get("status") == "available"]
         if not avail:
             safe_edit_or_send(
