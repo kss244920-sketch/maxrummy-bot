@@ -219,6 +219,26 @@ def start_health_server(port: int = 8080):
                 self.wfile.write(json.dumps(diag).encode("utf-8"))
                 return
 
+            if self.path.startswith("/test_check"):
+                t0 = time.time()
+                res = MaxRummyClient.check_all_platforms("6204796946")
+                avail = [r for r in res if r.get("status") == "available"]
+                reg = [r for r in res if r.get("status") == "registered"]
+                cooldown = [r for r in res if r.get("status") == "cooldown"]
+                err = [r for r in res if r.get("status") == "error"]
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "duration": round(time.time() - t0, 2),
+                    "avail_count": len(avail),
+                    "reg_count": len(reg),
+                    "cooldown_count": len(cooldown),
+                    "err_count": len(err),
+                    "sample_err": err[0] if err else None
+                }).encode("utf-8"))
+                return
+
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
