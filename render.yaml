@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: maxrummy-bot
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 -u maxrummy_bot.py
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: BOT_TOKEN
+        value: 8948124151:AAHDfoNjx_VBdIhn3KvS-87JrlX5Nv3xYvs

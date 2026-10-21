@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.git
+.github
+render_config.json
+registered_accounts.txt
+checked_accounts.txt

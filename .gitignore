@@ -6,3 +6,4 @@ __pycache__/
 registered_accounts.txt
 checked_accounts.txt
 jrnm_identity.token
+render_config.json

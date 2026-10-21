@@ -1,0 +1,31 @@
+name: 24/7 Render Keep-Alive (Zero-Sleep)
+
+on:
+  schedule:
+    # Runs every 4 hours to start a continuous 5-hour keep-alive loop (100% zero-sleep overlap)
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    name: Ping Render 24/7 Continuous
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install requests urllib3
+
+      - name: Run Render Continuous Anti-Sleep Loop (5 Hours)
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY || 'rnd_xzD7q1kZeNDWiCgR4Eaw7p6byb9n' }}
+          RENDER_OWNER_ID: ${{ secrets.RENDER_OWNER_ID || 'tea-d6fdiu88tnhs73co1950' }}
+          RENDER_SERVICE_NAME: 'maxrummy-bot'
+        run: python scripts/keep_alive_render.py --loop 300
