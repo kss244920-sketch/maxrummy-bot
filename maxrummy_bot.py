@@ -18,6 +18,7 @@ import time
 import json
 import io
 import re
+import html
 import random
 import threading
 import http.server
@@ -104,6 +105,42 @@ def send_master_log(text: str):
         bot.send_message(master_chan, text, parse_mode="HTML")
     except Exception as e:
         log(f"Master log send error: {e}")
+
+
+def safe_edit_or_send(
+    chat_id: int,
+    text: str,
+    reply_markup: Optional[types.InlineKeyboardMarkup] = None,
+    message_id: Optional[int] = None,
+    reply_to_message_id: Optional[int] = None
+) -> Optional[int]:
+    """Safely edits an existing message or falls back to sending a new message with HTML entity recovery."""
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup, parse_mode="HTML")
+            return message_id
+        except Exception as e:
+            err_str = str(e).lower()
+            if "message is not modified" in err_str:
+                return message_id
+            if "can't parse entities" in err_str or "parse mode" in err_str:
+                try:
+                    bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=reply_markup, parse_mode=None)
+                    return message_id
+                except Exception:
+                    pass
+            log(f"[safe_edit_or_send] edit_message_text failed ({e}), falling back to send_message")
+
+    try:
+        sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+        return sent.message_id
+    except Exception as e:
+        err_str = str(e).lower()
+        if "can't parse entities" in err_str or "parse mode" in err_str:
+            sent = bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=None, reply_to_message_id=reply_to_message_id)
+            return sent.message_id
+        log(f"[safe_edit_or_send] send_message failed: {e}")
+        return None
 
 
 def parse_accounts_data(raw_text: str) -> List[Tuple[str, str]]:
@@ -741,24 +778,27 @@ def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_
         return
 
     init_text = f"🔍 <b>Checking mobile <code>{clean_phone}</code> across {len(PLATFORMS_LIST)} Yono platforms in parallel...</b>"
+    status_msg_id = None
     if message_id:
         try:
-            bot.edit_message_text(init_text, chat_id, message_id)
+            bot.edit_message_text(init_text, chat_id, message_id, parse_mode="HTML")
             status_msg_id = message_id
         except Exception:
-            status_msg = bot.send_message(chat_id, init_text)
+            status_msg = bot.send_message(chat_id, init_text, parse_mode="HTML")
             status_msg_id = status_msg.message_id
     else:
-        status_msg = bot.send_message(chat_id, init_text, reply_to_message_id=reply_to_msg_id)
+        status_msg = bot.send_message(chat_id, init_text, reply_to_message_id=reply_to_msg_id, parse_mode="HTML")
         status_msg_id = status_msg.message_id
 
     def _worker():
         try:
-            results = MaxRummyClient.check_all_platforms(clean_phone)
+            log(f"Starting parallel check across {len(PLATFORMS_LIST)} platforms for {clean_phone}...")
+            results = MaxRummyClient.check_all_platforms(clean_phone, timeout=3.5)
             avail = [r for r in results if r.get("status") == "available"]
             reg = [r for r in results if r.get("status") == "registered"]
             cooldown = [r for r in results if r.get("status") == "cooldown"]
             errors = [r for r in results if r.get("status") not in ("available", "registered", "cooldown")]
+            log(f"Check done for {clean_phone}: {len(avail)} fresh, {len(reg)} registered, {len(cooldown)} cooldown, {len(errors)} err")
 
             lines = [
                 f"🌐 <b>Multi-Platform Status Report</b>",
@@ -770,25 +810,27 @@ def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_
             if avail:
                 lines.append(f"🟢 <b>Fresh / Available for Registration ({len(avail)}):</b>")
                 for r in avail:
-                    lines.append(f"  • <b>{r['name']}</b> <i>(Fresh)</i>")
+                    lines.append(f"  • <b>{html.escape(r['name'])}</b> <i>(Fresh)</i>")
                 lines.append("")
 
             if reg:
                 lines.append(f"🔴 <b>Already Registered ({len(reg)}):</b>")
                 for r in reg:
-                    lines.append(f"  • {r['name']}")
+                    lines.append(f"  • {html.escape(r['name'])}")
                 lines.append("")
 
             if cooldown:
                 lines.append(f"⏳ <b>Number on Cooldown ({len(cooldown)}):</b>")
                 for r in cooldown:
-                    lines.append(f"  • {r['name']} - <i>{r.get('msg')}</i>")
+                    m = html.escape(str(r.get("msg", "Cooldown")))
+                    lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
                 lines.append("")
 
             if errors:
                 lines.append(f"⚠️ <b>Other / Offline ({len(errors)}):</b>")
                 for r in errors:
-                    lines.append(f"  • {r['name']} - <i>{r.get('msg')}</i>")
+                    m = html.escape(str(r.get("msg", "Offline")))
+                    lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
                 lines.append("")
 
             lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -818,13 +860,16 @@ def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_
                 types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
             )
 
-            bot.edit_message_text(text, chat_id, status_msg_id, reply_markup=kb)
+            safe_edit_or_send(chat_id, text, reply_markup=kb, message_id=status_msg_id)
         except Exception as e:
-            bot.edit_message_text(
-                f"❌ <b>Platform check error:</b> {str(e)}",
+            import traceback
+            traceback.print_exc()
+            log(f"Platform check error for {clean_phone}: {e}")
+            safe_edit_or_send(
                 chat_id,
-                status_msg_id,
-                reply_markup=get_main_keyboard(user_id)
+                f"❌ <b>Platform check error:</b> {html.escape(str(e))}",
+                reply_markup=get_main_keyboard(user_id),
+                message_id=status_msg_id
             )
 
     threading.Thread(target=_worker, daemon=True).start()
@@ -834,7 +879,7 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
     user_id = call.from_user.id
     if not admin_manager.has_enough_tokens(user_id, 1):
         msg, kb = get_insufficient_tokens_msg(user_id, 1)
-        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+        safe_edit_or_send(call.message.chat.id, msg, reply_markup=kb, message_id=call.message.message_id)
         return
 
     p_info = PLATFORMS_MAP.get(platform_id)
@@ -847,7 +892,7 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
 
     status_msg = bot.send_message(
         call.message.chat.id,
-        f"⏳ <b>[{p_name}]</b> Mobile <code>{phone}</code> par OTP bheja ja raha hai..."
+        f"⏳ <b>[{html.escape(p_name)}]</b> Mobile <code>{phone}</code> par OTP bheja ja raha hai..."
     )
 
     client = MaxRummyClient(platform=p_info)
@@ -859,11 +904,11 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
             types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}", style="primary"),
             types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
-        bot.edit_message_text(
-            f"❌ <b>OTP Send Failed for {p_name}!</b>\nReason: {res.get('msg')}\n\nKripya dobara koshish karein.",
+        safe_edit_or_send(
             call.message.chat.id,
-            status_msg.message_id,
-            reply_markup=kb
+            f"❌ <b>OTP Send Failed for {html.escape(p_name)}!</b>\nReason: {html.escape(str(res.get('msg')))}\n\nKripya dobara koshish karein.",
+            reply_markup=kb,
+            message_id=status_msg.message_id
         )
         return
 
@@ -945,13 +990,13 @@ def step_platform_otp_finish(message: types.Message):
         bonus_badge = f"🎁 <b>Claimed Bind Bonus:</b> <b>₹{claimed_bonus:.2f}</b>\n" if claimed_bonus > 0 else "🎁 <b>Bind Bonus:</b> Auto-Processed\n"
 
         success_text = (
-            f"🎉 <b>{p_name} Registration Successful!</b>\n\n"
+            f"🎉 <b>{html.escape(p_name)} Registration Successful!</b>\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• <b>Platform:</b> {p_name}\n"
+            f"• <b>Platform:</b> {html.escape(p_name)}\n"
             f"• <b>Phone:</b> <code>{phone}</code>\n"
             f"• <b>Password:</b> <code>{pwd}</code>\n"
             f"• <b>UID:</b> <code>{uid}</code>\n"
-            f"• <b>Nickname:</b> {name}\n"
+            f"• <b>Nickname:</b> {html.escape(name)}\n"
             f"{bonus_badge}"
             f"• <b>Total Balance:</b> <b>₹{tot_bal:.2f}</b>\n"
             f"• <b>Remaining Tokens:</b> <code>{rem_tokens}</code>\n"
@@ -963,22 +1008,22 @@ def step_platform_otp_finish(message: types.Message):
             types.InlineKeyboardButton("🌐 Check Other Platforms", callback_data=f"pchk:{phone}", style="primary"),
             types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
-        bot.edit_message_text(success_text, message.chat.id, status_msg.message_id, reply_markup=kb)
+        safe_edit_or_send(message.chat.id, success_text, reply_markup=kb, message_id=status_msg.message_id)
     else:
-        err_msg = res.get("msg", "Registration failed")
+        err_msg = html.escape(str(res.get("msg", "Registration failed")))
         kb = types.InlineKeyboardMarkup()
         kb.row(
             types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}", style="primary"),
             types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
-        bot.edit_message_text(
-            f"❌ <b>Registration Failed on {p_name}!</b>\n\n"
+        safe_edit_or_send(
+            message.chat.id,
+            f"❌ <b>Registration Failed on {html.escape(p_name)}!</b>\n\n"
             f"• <b>Phone:</b> <code>{phone}</code>\n"
             f"• <b>Error:</b> {err_msg}\n\n"
             f"Token deduct nahi hua.",
-            message.chat.id,
-            status_msg.message_id,
-            reply_markup=kb
+            reply_markup=kb,
+            message_id=status_msg.message_id
         )
     pop_user_state(user_id)
 
@@ -987,7 +1032,7 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
     user_id = call.from_user.id
     if not admin_manager.has_enough_tokens(user_id, 1):
         msg, kb = get_insufficient_tokens_msg(user_id, 1)
-        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+        safe_edit_or_send(call.message.chat.id, msg, reply_markup=kb, message_id=call.message.message_id)
         return
 
     bot.answer_callback_query(call.id, "Starting 1-by-1 sequential registration...")
@@ -998,14 +1043,15 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
     )
 
     def _prepare():
-        results = MaxRummyClient.check_all_platforms(phone)
+        log(f"Initiating multi-platform registration for {phone}...")
+        results = MaxRummyClient.check_all_platforms(phone, timeout=3.5)
         avail = [r for r in results if r.get("status") == "available"]
         if not avail:
-            bot.edit_message_text(
-                f"⚠️ <b>Koi bhi platform fresh/available nahi mila mobile <code>{phone}</code> ke liye!</b>",
+            safe_edit_or_send(
                 call.message.chat.id,
-                status_msg.message_id,
-                reply_markup=get_main_keyboard(user_id)
+                f"⚠️ <b>Koi bhi platform fresh/available nahi mila mobile <code>{phone}</code> ke liye!</b>",
+                reply_markup=get_main_keyboard(user_id),
+                message_id=status_msg.message_id
             )
             return
 
@@ -1049,24 +1095,17 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
         ]
         for item in results:
-            p_name = item.get("name")
+            p_name = html.escape(str(item.get("name", "Platform")))
             if item.get("ok"):
                 lines.append(f"• 🟢 <b>{p_name}</b>: UID <code>{item.get('uid')}</code> | Bonus ₹{item.get('bonus', 0.0):.2f}")
             else:
-                lines.append(f"• 🔴 <b>{p_name}</b>: {item.get('msg')}")
+                lines.append(f"• 🔴 <b>{p_name}</b>: {html.escape(str(item.get('msg', 'Error')))}")
 
         lines.append(f"\nSaved to your registry file!")
         summary_text = "\n".join(lines)
 
         pop_user_state(user_id)
-
-        if prev_msg_id:
-            try:
-                bot.edit_message_text(summary_text, chat_id, prev_msg_id, reply_markup=get_main_keyboard(user_id))
-                return
-            except Exception:
-                pass
-        bot.send_message(chat_id, summary_text, reply_markup=get_main_keyboard(user_id))
+        safe_edit_or_send(chat_id, summary_text, reply_markup=get_main_keyboard(user_id), message_id=prev_msg_id)
         return
 
     # Check token availability for next platform
