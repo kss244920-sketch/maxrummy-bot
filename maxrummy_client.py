@@ -992,12 +992,12 @@ class MaxRummyClient:
                     "platform": p
                 }
 
-        sem = asyncio.Semaphore(16)
+        sem = asyncio.Semaphore(25)
 
         async def _check_single_safe(p: Dict[str, Any]) -> Dict[str, Any]:
             async with sem:
                 try:
-                    return await asyncio.wait_for(_check_single(p), timeout=timeout + 0.5)
+                    return await asyncio.wait_for(_check_single(p), timeout=timeout)
                 except asyncio.TimeoutError:
                     return {
                         "platform_id": p["id"],
