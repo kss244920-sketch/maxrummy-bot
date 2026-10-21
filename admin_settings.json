@@ -14,11 +14,11 @@
     "8327850869": {
       "user_id": 8327850869,
       "username": "OwAtom",
-      "first_name": "Owner",
+      "first_name": "\u115f",
       "role": "\ud83d\udc51 Owner / Super Admin",
       "tokens": 999999,
       "joined_at": 1792321177.4665475,
-      "last_active": 1792321177.4665477,
+      "last_active": 1792597234.913297,
       "user_log_channel": null,
       "user_storage_channel": null
     },
@@ -36,9 +36,9 @@
   },
   "admin_daily_usage": {
     "6217522461": {
-      "date": "2026-10-19",
+      "date": "2026-10-21",
       "used": 0,
-      "last_reset": 1792391404.0275524
+      "last_reset": 1792597033.9837015
     }
   }
 }

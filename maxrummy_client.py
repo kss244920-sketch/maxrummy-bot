@@ -55,7 +55,7 @@ RES_VERSION = "1.2.1.3"
 APP_VERSION = "1.1.9"
 BUNDLE_ID = "com.spin.glg.games"
 AUTH_SALT = "hero888"
-DEFAULT_INVITE_CODE = "HLTMLT53NZW"
+DEFAULT_INVITE_CODE = "H1QKDHCU"
 
 # MsgId definitions
 MSG_LOGIN = 1
@@ -189,7 +189,7 @@ class MaxRummyClient:
                 "login_server": "lo.ghjio08.com",
                 "sms_otp_url": "https://service.eujujo08.com/sms/dosend",
                 "auth_salt": "hero888",
-                "invite_code": "HLTMLT53NZW"
+                "invite_code": "H1QKDHCU"
             })
 
         self.platform_id = self.platform.get("id", "spingold")
