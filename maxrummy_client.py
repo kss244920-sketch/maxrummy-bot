@@ -16,6 +16,7 @@ import sys
 import time
 import json
 import ssl
+import socket
 import random
 import hashlib
 import struct
@@ -29,6 +30,12 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 import msgpack
 import websockets
+
+try:
+    import urllib3.util.connection
+    urllib3.util.connection.HAS_IPV6 = False
+except Exception:
+    pass
 
 # Load Multi-Platform Registry
 PLATFORMS_FILE = Path(__file__).parent / "platforms.json"
@@ -250,8 +257,9 @@ class MaxRummyClient:
             uri,
             ssl=ssl_ctx,
             open_timeout=self.timeout,
-            close_timeout=3.0,
-            max_size=10 * 1024 * 1024
+            close_timeout=1.0,
+            max_size=10 * 1024 * 1024,
+            family=socket.AF_INET
         )
 
     async def login_async(self, phone: str, password: str) -> Dict[str, Any]:
@@ -880,7 +888,7 @@ class MaxRummyClient:
         return asyncio.run(self.bind_phone_and_claim_async(guest_user, guest_pass, phone, otp, new_pass))
 
     @classmethod
-    async def check_all_platforms_async(cls, phone: str, timeout: float = 3.5) -> List[Dict[str, Any]]:
+    async def check_all_platforms_async(cls, phone: str, timeout: float = 2.5) -> List[Dict[str, Any]]:
         """
         Pings all registered Cocos / Yono platforms in parallel via WebSocket LOGIN (c=1, t=9).
         Categorizes each platform:
@@ -964,35 +972,38 @@ class MaxRummyClient:
                     "platform": p
                 }
 
+        sem = asyncio.Semaphore(16)
+
         async def _check_single_safe(p: Dict[str, Any]) -> Dict[str, Any]:
-            try:
-                return await asyncio.wait_for(_check_single(p), timeout=timeout + 1.0)
-            except asyncio.TimeoutError:
-                return {
-                    "platform_id": p["id"],
-                    "name": p["name"],
-                    "status": "error",
-                    "spcode": None,
-                    "msg": "Connection timeout",
-                    "invite_code": p.get("invite_code", ""),
-                    "platform": p
-                }
-            except Exception as e:
-                return {
-                    "platform_id": p["id"],
-                    "name": p["name"],
-                    "status": "error",
-                    "spcode": None,
-                    "msg": str(e),
-                    "invite_code": p.get("invite_code", ""),
-                    "platform": p
-                }
+            async with sem:
+                try:
+                    return await asyncio.wait_for(_check_single(p), timeout=timeout + 0.5)
+                except asyncio.TimeoutError:
+                    return {
+                        "platform_id": p["id"],
+                        "name": p["name"],
+                        "status": "error",
+                        "spcode": None,
+                        "msg": "Connection timeout",
+                        "invite_code": p.get("invite_code", ""),
+                        "platform": p
+                    }
+                except Exception as e:
+                    return {
+                        "platform_id": p["id"],
+                        "name": p["name"],
+                        "status": "error",
+                        "spcode": None,
+                        "msg": str(e),
+                        "invite_code": p.get("invite_code", ""),
+                        "platform": p
+                    }
 
         tasks = [_check_single_safe(p) for p in PLATFORMS_LIST]
         return await asyncio.gather(*tasks)
 
     @classmethod
-    def check_all_platforms(cls, phone: str, timeout: float = 3.5) -> List[Dict[str, Any]]:
+    def check_all_platforms(cls, phone: str, timeout: float = 2.5) -> List[Dict[str, Any]]:
         return asyncio.run(cls.check_all_platforms_async(phone, timeout=timeout))
 
 
