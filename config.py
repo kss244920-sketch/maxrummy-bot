@@ -18,7 +18,7 @@ def get_data_dir() -> Path:
 DATA_DIR = get_data_dir()
 
 # Telegram Bot Token (can be overridden via environment variable)
-BOT_TOKEN = os.getenv("MAXRUMMY_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "8069923292:AAEAYSJPllY-UmxJzMqubde1NapwFyi0zgs"
+BOT_TOKEN = os.getenv("MAXRUMMY_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "8948124151:AAHDfoNjx_VBdIhn3KvS-87JrlX5Nv3xYvs"
 
 # Owner and Support Contacts
 OWNER_ID = 8327850869

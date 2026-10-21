@@ -177,14 +177,14 @@ def start_health_server(port: int = 8080):
 
 def get_main_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_multi = types.InlineKeyboardButton(f"🌐 Multi-Platform Checker ({len(PLATFORMS_LIST)} Yono Apps)", callback_data="btn_check_platforms")
-    b_reg = types.InlineKeyboardButton("🎁 Bind Number & Get Bonus", callback_data="btn_reg_single")
-    b_claim = types.InlineKeyboardButton("💰 Check / Claim Bonus", callback_data="btn_claim_single")
-    b_check = types.InlineKeyboardButton("💵 Check Balance", callback_data="btn_check_single")
-    b_bulk_claim = types.InlineKeyboardButton("⚡ Bulk Claim Bonus", callback_data="btn_claim_bulk")
-    b_bulk_check = types.InlineKeyboardButton("📊 Bulk Balance Check", callback_data="btn_check_bulk")
-    b_profile = types.InlineKeyboardButton("👤 My Wallet / Tokens", callback_data="btn_profile")
-    b_support = types.InlineKeyboardButton("💬 Support / Recharge", callback_data="btn_support")
+    b_multi = types.InlineKeyboardButton(f"🌐 Multi-Platform Checker ({len(PLATFORMS_LIST)} Yono Apps)", callback_data="btn_check_platforms", style="primary")
+    b_reg = types.InlineKeyboardButton("🎁 Bind Number & Get Bonus", callback_data="btn_reg_single", style="success")
+    b_claim = types.InlineKeyboardButton("💰 Check / Claim Bonus", callback_data="btn_claim_single", style="primary")
+    b_check = types.InlineKeyboardButton("💵 Check Balance", callback_data="btn_check_single", style="primary")
+    b_bulk_claim = types.InlineKeyboardButton("⚡ Bulk Claim Bonus", callback_data="btn_claim_bulk", style="success")
+    b_bulk_check = types.InlineKeyboardButton("📊 Bulk Balance Check", callback_data="btn_check_bulk", style="primary")
+    b_profile = types.InlineKeyboardButton("👤 My Wallet / Tokens", callback_data="btn_profile", style="primary")
+    b_support = types.InlineKeyboardButton("💬 Support / Recharge", callback_data="btn_support", style="primary")
     
     markup.add(b_multi)
     markup.add(b_reg)
@@ -193,7 +193,7 @@ def get_main_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     markup.add(b_profile, b_support)
 
     if admin_manager.is_admin(user_id):
-        b_admin = types.InlineKeyboardButton("👑 Admin Suite", callback_data="btn_admin")
+        b_admin = types.InlineKeyboardButton("👑 Admin Suite", callback_data="btn_admin", style="danger")
         markup.add(b_admin)
 
     return markup
@@ -212,10 +212,10 @@ def get_insufficient_tokens_msg(user_id: int, required: int = 1) -> Tuple[str, t
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("💬 Contact @OwAtom", url="https://t.me/OwAtom"),
-        types.InlineKeyboardButton("💬 Contact @OwKarma", url="https://t.me/OwKarma")
+        types.InlineKeyboardButton("💬 Contact @OwAtom", url="https://t.me/OwAtom", style="primary"),
+        types.InlineKeyboardButton("💬 Contact @OwKarma", url="https://t.me/OwKarma", style="primary")
     )
-    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu"))
+    markup.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger"))
     return text, markup
 
 
@@ -356,7 +356,7 @@ def on_callback_query(call: types.CallbackQuery):
             f"Need more tokens? Contact 👉 @OwAtom / @OwKarma"
         )
         kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu"))
+        kb.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger"))
         bot.edit_message_text(txt, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
     elif data == "btn_support":
@@ -371,10 +371,10 @@ def on_callback_query(call: types.CallbackQuery):
         )
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(
-            types.InlineKeyboardButton("💬 @OwAtom", url="https://t.me/OwAtom"),
-            types.InlineKeyboardButton("💬 @OwKarma", url="https://t.me/OwKarma")
+            types.InlineKeyboardButton("💬 @OwAtom", url="https://t.me/OwAtom", style="primary"),
+            types.InlineKeyboardButton("💬 @OwKarma", url="https://t.me/OwKarma", style="primary")
         )
-        kb.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu"))
+        kb.add(types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger"))
         bot.edit_message_text(txt, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
     # ─────────────────────────────────────────────────────────────
@@ -572,7 +572,7 @@ def on_callback_query(call: types.CallbackQuery):
         if len(users) > 20:
             lines.append(f"\n<i>...aur {len(users)-20} users hain.</i>")
         kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton("🔙 Admin Panel", callback_data="btn_admin"))
+        kb.add(types.InlineKeyboardButton("🔙 Admin Panel", callback_data="btn_admin", style="danger"))
         bot.edit_message_text("\n".join(lines), call.message.chat.id, call.message.message_id, reply_markup=kb)
 
     elif data == "adm_ledger_view":
@@ -634,9 +634,9 @@ def show_ledger_view(chat_id: int, message_id: Optional[int] = None, filter_user
     kb = types.InlineKeyboardMarkup(row_width=2)
     cb_refresh = f"adm_ledger_ref_{filter_user_id}" if filter_user_id else "adm_ledger_ref_0"
     cb_export = f"adm_ledger_exp_{filter_user_id}" if filter_user_id else "adm_ledger_exp_0"
-    b_ref = types.InlineKeyboardButton("🔄 Refresh", callback_data=cb_refresh)
-    b_exp = types.InlineKeyboardButton("📥 Export TXT Report", callback_data=cb_export)
-    b_back = types.InlineKeyboardButton("🔙 Admin Panel", callback_data="btn_admin")
+    b_ref = types.InlineKeyboardButton("🔄 Refresh", callback_data=cb_refresh, style="primary")
+    b_exp = types.InlineKeyboardButton("📥 Export TXT Report", callback_data=cb_export, style="success")
+    b_back = types.InlineKeyboardButton("🔙 Admin Panel", callback_data="btn_admin", style="danger")
     kb.add(b_ref, b_exp)
     kb.add(b_back)
 
@@ -697,16 +697,16 @@ def show_admin_panel(chat_id: int, message_id: Optional[int] = None):
         f"{owner_cmds}"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
-    b_maint = types.InlineKeyboardButton(f"🛠️ Maint: {maint_status}", callback_data="adm_toggle_maint")
-    b_free = types.InlineKeyboardButton(f"🎁 Free Mode: {free_status}", callback_data="adm_toggle_free")
-    b_users = types.InlineKeyboardButton("👥 Users List", callback_data="adm_users_list")
+    b_maint = types.InlineKeyboardButton(f"🛠️ Maint: {maint_status}", callback_data="adm_toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
+    b_free = types.InlineKeyboardButton(f"🎁 Free Mode: {free_status}", callback_data="adm_toggle_free", style="success" if admin_manager.is_free_mode() else "primary")
+    b_users = types.InlineKeyboardButton("👥 Users List", callback_data="adm_users_list", style="primary")
     kb.add(b_maint, b_free)
     if is_owner:
-        b_ledger = types.InlineKeyboardButton("📜 Owner Audit Ledger", callback_data="adm_ledger_view")
+        b_ledger = types.InlineKeyboardButton("📜 Owner Audit Ledger", callback_data="adm_ledger_view", style="primary")
         kb.add(b_users, b_ledger)
     else:
         kb.add(b_users)
-    b_back = types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+    b_back = types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
     kb.add(b_back)
 
     if message_id:
@@ -805,17 +805,17 @@ def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_
                 for r in avail:
                     pid = r["platform_id"]
                     pname = r["name"]
-                    p_buttons.append(types.InlineKeyboardButton(f"🎁 {pname}", callback_data=f"preg:{pid}:{clean_phone}"))
+                    p_buttons.append(types.InlineKeyboardButton(f"🎁 {pname}", callback_data=f"preg:{pid}:{clean_phone}", style="success"))
 
                 for i in range(0, len(p_buttons), 2):
                     kb.row(*p_buttons[i:i+2])
 
                 if len(avail) > 1:
-                    kb.row(types.InlineKeyboardButton(f"⚡ 1 by 1 All ({len(avail)} Platforms)", callback_data=f"pregall:{clean_phone}"))
+                    kb.row(types.InlineKeyboardButton(f"⚡ 1 by 1 All ({len(avail)} Platforms)", callback_data=f"pregall:{clean_phone}", style="primary"))
 
             kb.row(
-                types.InlineKeyboardButton("🔄 Re-check", callback_data=f"pchk:{clean_phone}"),
-                types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+                types.InlineKeyboardButton("🔄 Re-check", callback_data=f"pchk:{clean_phone}", style="primary"),
+                types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
             )
 
             bot.edit_message_text(text, chat_id, status_msg_id, reply_markup=kb)
@@ -856,8 +856,8 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
     if not res.get("ok"):
         kb = types.InlineKeyboardMarkup()
         kb.row(
-            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}"),
-            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}", style="primary"),
+            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
         bot.edit_message_text(
             f"❌ <b>OTP Send Failed for {p_name}!</b>\nReason: {res.get('msg')}\n\nKripya dobara koshish karein.",
@@ -960,16 +960,16 @@ def step_platform_otp_finish(message: types.Message):
         )
         kb = types.InlineKeyboardMarkup()
         kb.row(
-            types.InlineKeyboardButton("🌐 Check Other Platforms", callback_data=f"pchk:{phone}"),
-            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+            types.InlineKeyboardButton("🌐 Check Other Platforms", callback_data=f"pchk:{phone}", style="primary"),
+            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
         bot.edit_message_text(success_text, message.chat.id, status_msg.message_id, reply_markup=kb)
     else:
         err_msg = res.get("msg", "Registration failed")
         kb = types.InlineKeyboardMarkup()
         kb.row(
-            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}"),
-            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu")
+            types.InlineKeyboardButton("🔄 Re-check Platforms", callback_data=f"pchk:{phone}", style="primary"),
+            types.InlineKeyboardButton("🔙 Main Menu", callback_data="btn_main_menu", style="danger")
         )
         bot.edit_message_text(
             f"❌ <b>Registration Failed on {p_name}!</b>\n\n"
