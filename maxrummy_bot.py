@@ -78,6 +78,19 @@ def pop_user_state(user_id: int) -> Optional[dict]:
         return USER_STATES.pop(user_id, None)
 
 
+def set_check_cache(user_id: int, phone: str, results: list):
+    with USER_STATES_LOCK:
+        CHECK_CACHE[user_id] = {"phone": phone, "results": results, "ts": time.time()}
+
+
+def get_check_cache(user_id: int, phone: str) -> Optional[list]:
+    with USER_STATES_LOCK:
+        cached = CHECK_CACHE.get(user_id)
+        if cached and cached.get("phone") == phone and time.time() - cached.get("ts", 0) < 600:
+            return cached.get("results")
+    return None
+
+
 def is_rate_limited(user_id: int, min_interval: float = 0.5) -> bool:
     """Anti-Flood protection against Telegram 429 flood bans."""
     if admin_manager.is_admin(user_id):
@@ -846,8 +859,12 @@ def build_platform_report(clean_phone: str, results: List[Dict[str, Any]]) -> Tu
 
     if reg:
         lines.append(f"🔴 <b>Already Registered ({len(reg)}):</b>")
-        for r in reg:
-            lines.append(f"  • {html.escape(r['name'])}")
+        if len(reg) <= 15:
+            for r in reg:
+                lines.append(f"  • {html.escape(r['name'])}")
+        else:
+            reg_names = ", ".join(html.escape(r['name']) for r in reg)
+            lines.append(f"  <i>{reg_names}</i>")
         lines.append("")
 
     if cooldown:
@@ -859,9 +876,13 @@ def build_platform_report(clean_phone: str, results: List[Dict[str, Any]]) -> Tu
 
     if errors:
         lines.append(f"⚠️ <b>Other / Offline ({len(errors)}):</b>")
-        for r in errors:
-            m = html.escape(str(r.get("msg", "Offline")))
-            lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
+        if len(errors) <= 8:
+            for r in errors:
+                m = html.escape(str(r.get("msg", "Offline")))
+                lines.append(f"  • {html.escape(r['name'])} - <i>{m}</i>")
+        else:
+            err_names = ", ".join(html.escape(r['name']) for r in errors)
+            lines.append(f"  <i>{err_names}</i>")
         lines.append("")
 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -873,6 +894,8 @@ def build_platform_report(clean_phone: str, results: List[Dict[str, Any]]) -> Tu
         lines.append("⚠️ Is number par koi bhi platform fresh/available nahi mila.")
 
     text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3850] + "\n\n<i>[Report truncated for message length limit]</i>"
 
     kb = types.InlineKeyboardMarkup()
     if avail:
@@ -888,12 +911,10 @@ def build_platform_report(clean_phone: str, results: List[Dict[str, Any]]) -> Tu
 
 def render_select_single_platform(chat_id: int, user_id: int, phone: str, message_id: int):
     clean_phone = clean_phone_number(phone)
-    cached = CHECK_CACHE.get(user_id)
-    if cached and cached.get("phone") == clean_phone and time.time() - cached.get("ts", 0) < 600:
-        results = cached.get("results", [])
-    else:
+    results = get_check_cache(user_id, clean_phone)
+    if not results:
         results = MaxRummyClient.check_all_platforms(clean_phone, timeout=6.0)
-        CHECK_CACHE[user_id] = {"phone": clean_phone, "results": results, "ts": time.time()}
+        set_check_cache(user_id, clean_phone, results)
 
     avail = [r for r in results if r.get("status") == "available"]
     if not avail:
@@ -933,9 +954,9 @@ def render_select_single_platform(chat_id: int, user_id: int, phone: str, messag
 
 def render_platform_report(chat_id: int, user_id: int, phone: str, message_id: int):
     clean_phone = clean_phone_number(phone)
-    cached = CHECK_CACHE.get(user_id)
-    if cached and cached.get("phone") == clean_phone:
-        text, kb = build_platform_report(clean_phone, cached["results"])
+    results = get_check_cache(user_id, clean_phone)
+    if results:
+        text, kb = build_platform_report(clean_phone, results)
         safe_edit_or_send(chat_id, text, reply_markup=kb, message_id=message_id)
     else:
         execute_platform_check(chat_id, user_id, clean_phone, message_id=message_id)
@@ -964,7 +985,7 @@ def execute_platform_check(chat_id: int, user_id: int, phone: str, reply_to_msg_
         try:
             log(f"Starting parallel check across {len(PLATFORMS_LIST)} platforms for {clean_phone}...")
             results = MaxRummyClient.check_all_platforms(clean_phone, timeout=6.0)
-            CHECK_CACHE[user_id] = {"phone": clean_phone, "results": results, "ts": time.time()}
+            set_check_cache(user_id, clean_phone, results)
             avail = [r for r in results if r.get("status") == "available"]
             reg = [r for r in results if r.get("status") == "registered"]
             cooldown = [r for r in results if r.get("status") == "cooldown"]
@@ -1007,8 +1028,11 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
         f"⏳ <b>[{html.escape(p_name)}]</b> Mobile <code>{phone}</code> par OTP bheja ja raha hai..."
     )
 
-    client = MaxRummyClient(platform=p_info)
-    res = client.send_otp(phone)
+    try:
+        client = MaxRummyClient(platform=p_info)
+        res = client.send_otp(phone)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Connection error: {str(e)}"}
 
     if not res.get("ok"):
         kb = types.InlineKeyboardMarkup()
@@ -1036,15 +1060,15 @@ def initiate_single_platform_reg(call: types.CallbackQuery, platform_id: str, ph
     })
 
     prompt_txt = (
-        f"✅ <b>OTP Sent Successfully for {p_name}!</b>\n\n"
+        f"✅ <b>OTP Sent Successfully for {html.escape(p_name)}!</b>\n\n"
         f"📱 <b>Mobile:</b> <code>{phone}</code>\n"
-        f"🎰 <b>Platform:</b> {p_name}\n\n"
+        f"🎰 <b>Platform:</b> {html.escape(p_name)}\n\n"
         f"Kripya received <b>OTP aur Password</b> bhejein format me:\n"
         f"<code>OTP:Password</code>\n\n"
         f"<i>(Example: 123456:Pass@1234, ya sirf OTP bhejein to auto-password set hoga)</i>\n"
         f"Cancel karne ke liye /cancel bhejein."
     )
-    bot.edit_message_text(prompt_txt, call.message.chat.id, status_msg.message_id)
+    safe_edit_or_send(call.message.chat.id, prompt_txt, message_id=status_msg.message_id)
     bot.register_next_step_handler(status_msg, step_platform_otp_finish)
 
 
@@ -1074,10 +1098,13 @@ def step_platform_otp_finish(message: types.Message):
     p_info = PLATFORMS_MAP.get(p_id)
     p_name = state.get("platform_name", "Platform")
 
-    status_msg = bot.reply_to(message, f"⏳ <b>[{p_name}]</b> Registering <code>{phone}</code> & claiming Welcome Bonus...")
+    status_msg = bot.reply_to(message, f"⏳ <b>[{html.escape(p_name)}]</b> Registering <code>{phone}</code> & claiming Welcome Bonus...")
 
-    client = MaxRummyClient(platform=p_info)
-    res = client.register(phone, pwd, otp)
+    try:
+        client = MaxRummyClient(platform=p_info)
+        res = client.register(phone, pwd, otp)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
         admin_manager.deduct_tokens(user_id, 1, reason=f"Single Reg: {p_name} ({phone})")
@@ -1091,11 +1118,11 @@ def step_platform_otp_finish(message: types.Message):
 
         send_master_log(
             f"🎁 <b>[NEW REGISTRATION HIT]</b>\n"
-            f"• <b>Platform:</b> {p_name}\n"
+            f"• <b>Platform:</b> {html.escape(p_name)}\n"
             f"• <b>Phone:</b> <code>{phone}</code>\n"
-            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>Password:</b> <code>{html.escape(pwd)}</code>\n"
             f"• <b>UID:</b> <code>{uid}</code>\n"
-            f"• <b>Nickname:</b> {name}\n"
+            f"• <b>Nickname:</b> {html.escape(name)}\n"
             f"• <b>Claimed Bonus:</b> ₹{claimed_bonus:.2f}\n"
             f"• <b>Total Balance:</b> ₹{tot_bal:.2f}\n"
             f"• <b>User ID:</b> <code>{user_id}</code> (@{message.from_user.username or 'N/A'})"
@@ -1109,7 +1136,7 @@ def step_platform_otp_finish(message: types.Message):
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Platform:</b> {html.escape(p_name)}\n"
             f"• <b>Phone:</b> <code>{phone}</code>\n"
-            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>Password:</b> <code>{html.escape(pwd)}</code>\n"
             f"• <b>UID:</b> <code>{uid}</code>\n"
             f"• <b>Nickname:</b> {html.escape(name)}\n"
             f"{bonus_badge}"
@@ -1157,21 +1184,26 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
         safe_edit_or_send(call.message.chat.id, msg, reply_markup=kb, message_id=call.message.message_id)
         return
 
+    clean_phone = clean_phone_number(phone)
     bot.answer_callback_query(call.id, "Starting 1-by-1 sequential registration...")
 
     status_msg = bot.send_message(
         call.message.chat.id,
-        f"🔍 <b>Detecting available platforms for <code>{phone}</code>...</b>"
+        f"🔍 <b>Detecting available platforms for <code>{clean_phone}</code>...</b>"
     )
 
     def _prepare():
-        log(f"Initiating multi-platform registration for {phone}...")
-        results = MaxRummyClient.check_all_platforms(phone, timeout=6.0)
+        log(f"Initiating multi-platform registration for {clean_phone}...")
+        results = get_check_cache(user_id, clean_phone)
+        if not results:
+            results = MaxRummyClient.check_all_platforms(clean_phone, timeout=6.0)
+            set_check_cache(user_id, clean_phone, results)
+
         avail = [r for r in results if r.get("status") == "available"]
         if not avail:
             safe_edit_or_send(
                 call.message.chat.id,
-                f"⚠️ <b>Koi bhi platform fresh/available nahi mila mobile <code>{phone}</code> ke liye!</b>",
+                f"⚠️ <b>Koi bhi platform fresh/available nahi mila mobile <code>{clean_phone}</code> ke liye!</b>",
                 reply_markup=get_main_keyboard(user_id),
                 message_id=status_msg.message_id
             )
@@ -1180,7 +1212,7 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
         avail_pids = [r["platform_id"] for r in avail]
         set_user_state(user_id, {
             "action": "multi_platform_reg",
-            "phone": phone,
+            "phone": clean_phone,
             "queue": avail_pids,
             "total_count": len(avail_pids),
             "current_index": 0,
@@ -1225,6 +1257,8 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
 
         lines.append(f"\nSaved to your registry file!")
         summary_text = "\n".join(lines)
+        if len(summary_text) > 3900:
+            summary_text = summary_text[:3850] + "\n\n<i>[Report truncated for message length limit]</i>"
 
         pop_user_state(user_id)
         safe_edit_or_send(chat_id, summary_text, reply_markup=get_main_keyboard(user_id), message_id=prev_msg_id)
@@ -1239,7 +1273,7 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
             f"Please contact @OwAtom ya @OwKarma recharge ke liye."
         )
         if prev_msg_id:
-            bot.edit_message_text(msg_text, chat_id, prev_msg_id, reply_markup=get_main_keyboard(user_id))
+            safe_edit_or_send(chat_id, msg_text, reply_markup=get_main_keyboard(user_id), message_id=prev_msg_id)
         else:
             bot.send_message(chat_id, msg_text, reply_markup=get_main_keyboard(user_id))
         return
@@ -1254,8 +1288,11 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
     state["current_pname"] = p_name
 
     # Send OTP
-    client = MaxRummyClient(platform=p_info)
-    otp_res = client.send_otp(phone)
+    try:
+        client = MaxRummyClient(platform=p_info)
+        otp_res = client.send_otp(phone)
+    except Exception as e:
+        otp_res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if not otp_res.get("ok"):
         state["results"].append({
@@ -1267,7 +1304,7 @@ def trigger_next_multi_reg(chat_id: int, user_id: int, prev_msg_id: Optional[int
         return
 
     prompt_txt = (
-        f"⚡ <b>[{idx}/{tot}] Registering on {p_name}</b>\n"
+        f"⚡ <b>[{idx}/{tot}] Registering on {html.escape(p_name)}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📱 <b>Mobile:</b> <code>{phone}</code>\n"
         f"📩 <b>OTP Sent Successfully!</b>\n\n"
@@ -1325,7 +1362,7 @@ def step_multi_platform_otp(message: types.Message):
         otp = text
         pwd = f"User{random.randint(10000, 99999)}"
 
-    status_msg = bot.reply_to(message, f"⏳ <b>[{p_name}]</b> Registering & claiming Welcome Bonus...")
+    status_msg = bot.reply_to(message, f"⏳ <b>[{html.escape(p_name)}]</b> Registering & claiming Welcome Bonus...")
 
     try:
         client = MaxRummyClient(platform=p_info)
@@ -1357,21 +1394,21 @@ def step_multi_platform_otp(message: types.Message):
 
         send_master_log(
             f"🎁 <b>[MULTI-REG HIT]</b>\n"
-            f"• <b>Platform:</b> {p_name}\n"
+            f"• <b>Platform:</b> {html.escape(p_name)}\n"
             f"• <b>Phone:</b> <code>{phone}</code>\n"
-            f"• <b>Password:</b> <code>{pwd}</code>\n"
+            f"• <b>Password:</b> <code>{html.escape(pwd)}</code>\n"
             f"• <b>UID:</b> <code>{uid}</code>\n"
-            f"• <b>Nickname:</b> {name}\n"
+            f"• <b>Nickname:</b> {html.escape(name)}\n"
             f"• <b>Claimed Bonus:</b> ₹{claimed_bonus:.2f}\n"
             f"• <b>Total Balance:</b> ₹{tot_bal:.2f}\n"
             f"• <b>User ID:</b> <code>{user_id}</code> (@{message.from_user.username or 'N/A'})"
         )
 
-        bot.edit_message_text(
-            f"✅ <b>{p_name} Registered Successfully!</b>\n"
-            f"• UID: <code>{uid}</code> | Bonus: <b>₹{claimed_bonus:.2f}</b> | Balance: ₹{tot_bal:.2f}",
+        safe_edit_or_send(
             message.chat.id,
-            status_msg.message_id
+            f"✅ <b>{html.escape(p_name)} Registered Successfully!</b>\n"
+            f"• UID: <code>{uid}</code> | Bonus: <b>₹{claimed_bonus:.2f}</b> | Balance: ₹{tot_bal:.2f}",
+            message_id=status_msg.message_id
         )
     else:
         err = res.get("msg", "Failed")
@@ -1380,10 +1417,10 @@ def step_multi_platform_otp(message: types.Message):
             "ok": False,
             "msg": err
         })
-        bot.edit_message_text(
-            f"❌ <b>{p_name} Failed:</b> {err}\n<i>Token deduct nahi hua. Moving to next...</i>",
+        safe_edit_or_send(
             message.chat.id,
-            status_msg.message_id
+            f"❌ <b>{html.escape(p_name)} Failed:</b> {html.escape(str(err))}\n<i>Token deduct nahi hua. Moving to next...</i>",
+            message_id=status_msg.message_id
         )
 
     # Move to next platform in queue!
@@ -1407,14 +1444,17 @@ def step_reg_get_phone(message: types.Message):
 
     # Trigger OTP send
     status_msg = bot.reply_to(message, f"⏳ Mobile <code>{phone}</code> par OTP bheja ja raha hai...")
-    client = MaxRummyClient()
-    res = client.send_otp(phone)
+    try:
+        client = MaxRummyClient()
+        res = client.send_otp(phone)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Connection error: {str(e)}"}
 
     if not res.get("ok"):
-        bot.edit_message_text(
-            f"❌ <b>OTP Send Failed!</b>\nReason: {res.get('msg')}\n\nDobara koshish karein /start se.",
+        safe_edit_or_send(
             message.chat.id,
-            status_msg.message_id
+            f"❌ <b>OTP Send Failed!</b>\nReason: {html.escape(str(res.get('msg')))}\n\nDobara koshish karein /start se.",
+            message_id=status_msg.message_id
         )
         return
 
@@ -1560,11 +1600,18 @@ def step_bind_phone_step2(message: types.Message):
         return
 
     status_msg = bot.reply_to(message, f"⏳ Mobile <code>{phone}</code> par OTP bheja ja raha hai...")
-    client = MaxRummyClient()
-    res = client.send_otp(phone)
+    try:
+        client = MaxRummyClient()
+        res = client.send_otp(phone)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Connection error: {str(e)}"}
 
     if not res.get("ok"):
-        bot.edit_message_text(f"❌ OTP Send Failed: {res.get('msg')}", message.chat.id, status_msg.message_id)
+        safe_edit_or_send(
+            message.chat.id,
+            f"❌ <b>OTP Send Failed:</b> {html.escape(str(res.get('msg')))}",
+            message_id=status_msg.message_id
+        )
         pop_user_state(user_id)
         return
 
@@ -1679,8 +1726,11 @@ def step_claim_single_account(message: types.Message):
 
     status_msg = bot.reply_to(message, f"🎁 Processing bonuses for <code>{phone}</code>...")
 
-    client = MaxRummyClient()
-    res = client.claim_bonuses(phone, password)
+    try:
+        client = MaxRummyClient()
+        res = client.claim_bonuses(phone, password)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
         admin_manager.deduct_tokens(user_id, 1, reason=f"Bonus Claim: {phone}")
@@ -1871,8 +1921,11 @@ def step_check_single_account(message: types.Message):
 
     status_msg = bot.reply_to(message, f"🔍 Checking account <code>{phone}</code>...")
 
-    client = MaxRummyClient()
-    res = client.login(phone, password)
+    try:
+        client = MaxRummyClient()
+        res = client.login(phone, password)
+    except Exception as e:
+        res = {"ok": False, "msg": f"Exception: {str(e)}"}
 
     if res.get("ok"):
         admin_manager.deduct_tokens(user_id, 1, reason=f"Balance Check: {phone}")

@@ -255,10 +255,10 @@ class MaxRummyClient:
             ssl_ctx.verify_mode = ssl.CERT_NONE
 
         ua = "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        host = self.login_server
+        parsed_host = uri.replace("wss://", "").replace("ws://", "").split("/")[0].split(":")[0] or self.login_server
         headers = {
             "User-Agent": ua,
-            "Origin": f"https://{host}"
+            "Origin": f"https://{parsed_host}"
         }
 
         ws_kwargs = {
@@ -534,7 +534,6 @@ class MaxRummyClient:
                 net_server = resp.get("net")
                 server_id = resp.get("server", 1)
                 sub_id = resp.get("subid", 1)
-                print(f"DEBUG REGISTER RESP: net={net_server}, uid={uid}, token={token}, server={server_id}")
 
                 # Auto-claim Bind / Newer Gift Bonus
                 claimed_bonus = 0.0
@@ -605,7 +604,6 @@ class MaxRummyClient:
         got_gift_reward = False
         got_wallet_info = False
 
-        print(f"DEBUG NODE: connecting to {node_uri}")
         async with await self._ws_connect(node_uri) as node_ws:
             node_now = int(time.time() * 1000)
             # Handshake / Login node server
@@ -630,15 +628,14 @@ class MaxRummyClient:
             try:
                 ack_bytes = await asyncio.wait_for(node_ws.recv(), timeout=2.0)
                 ack_resp = unpack_packet(ack_bytes)
-                print(f"DEBUG NODE ACK: {ack_resp}")
                 if ack_resp and isinstance(ack_resp, dict):
                     p_info = ack_resp.get("playerInfo") or {}
                     if p_info:
                         coin = float(p_info.get("coin", 0.0))
                         dcoin = float(p_info.get("dcoin", 0.0))
                         ecoin = float(p_info.get("ecoin", 0.0))
-            except Exception as e:
-                print(f"DEBUG NODE ACK EXC: {e}")
+            except Exception:
+                pass
 
             # Bonus 1: Bind Phone / Welcome Gift (665)
             now_1 = int(time.time() * 1000)
@@ -677,7 +674,6 @@ class MaxRummyClient:
 
                     cmd = n_resp.get("c")
                     sp = n_resp.get("spcode")
-                    print(f"DEBUG NODE RECV: cmd={cmd}, sp={sp}, resp={n_resp}")
 
                     # Check 665 (Welcome / Bind Phone Bonus)
                     if cmd == MSG_GET_NEWER_GIFT_REWARDS:
@@ -997,7 +993,7 @@ class MaxRummyClient:
         async def _check_single_safe(p: Dict[str, Any]) -> Dict[str, Any]:
             async with sem:
                 try:
-                    return await asyncio.wait_for(_check_single(p), timeout=timeout)
+                    return await asyncio.wait_for(_check_single(p), timeout=timeout + 1.0)
                 except asyncio.TimeoutError:
                     return {
                         "platform_id": p["id"],
