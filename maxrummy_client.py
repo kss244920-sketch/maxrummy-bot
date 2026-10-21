@@ -253,14 +253,34 @@ class MaxRummyClient:
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
-        return await websockets.connect(
-            uri,
-            ssl=ssl_ctx,
-            open_timeout=self.timeout,
-            close_timeout=1.0,
-            max_size=10 * 1024 * 1024,
-            family=socket.AF_INET
-        )
+
+        ua = "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        host = self.login_server
+        headers = {
+            "User-Agent": ua,
+            "Origin": f"https://{host}"
+        }
+
+        ws_kwargs = {
+            "ssl": ssl_ctx,
+            "open_timeout": self.timeout,
+            "close_timeout": 1.0,
+            "max_size": 10 * 1024 * 1024,
+            "family": socket.AF_INET
+        }
+        try:
+            import inspect
+            sig_params = inspect.signature(websockets.connect).parameters
+            if "user_agent_header" in sig_params:
+                ws_kwargs["user_agent_header"] = ua
+            if "additional_headers" in sig_params:
+                ws_kwargs["additional_headers"] = headers
+            elif "extra_headers" in sig_params:
+                ws_kwargs["extra_headers"] = headers
+        except Exception:
+            pass
+
+        return await websockets.connect(uri, **ws_kwargs)
 
     async def login_async(self, phone: str, password: str) -> Dict[str, Any]:
         """

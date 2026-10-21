@@ -176,6 +176,49 @@ def start_health_server(port: int = 8080):
     """
     class HealthHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.startswith("/diag"):
+                import socket, ssl, urllib.request, urllib.error
+                diag = {}
+                host = "lo.ergnwp09.com"
+                try:
+                    diag["dns"] = socket.getaddrinfo(host, 443, socket.AF_INET)
+                except Exception as e:
+                    diag["dns_error"] = str(e)
+
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(3.0)
+                    t0 = time.time()
+                    s.connect((host, 443))
+                    diag["tcp_connect_time"] = round(time.time() - t0, 3)
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    ss = ctx.wrap_socket(s, server_hostname=host)
+                    diag["ssl_handshake_ok"] = True
+                    ss.close()
+                except Exception as e:
+                    diag["tcp_ssl_error"] = str(e)
+
+                try:
+                    req = urllib.request.Request(
+                        f"https://{host}/ws",
+                        headers={"User-Agent": "Mozilla/5.0 (Linux; Android 13; Mobile)"}
+                    )
+                    with urllib.request.urlopen(req, timeout=3.0) as resp:
+                        diag["http_status"] = resp.status
+                except urllib.error.HTTPError as e:
+                    diag["http_status"] = e.code
+                    diag["http_reason"] = str(e.reason)
+                except Exception as e:
+                    diag["http_error"] = str(e)
+
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(diag).encode("utf-8"))
+                return
+
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
