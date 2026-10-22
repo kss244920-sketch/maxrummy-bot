@@ -889,7 +889,7 @@ def build_platform_report(clean_phone: str, results: List[Dict[str, Any]]) -> Tu
     if avail:
         lines.append(f"🟢 <b>{len(avail)} Fresh Platforms Available!</b>\n"
                      f"• Sabhi par auto-register karne ke liye <b>1 by 1 All</b> dabayein.\n"
-                     f"• Kisi specific app par register karne ke liye <b>Select 1 Platform</b> dabayein:")
+                     f"• Niche diye gaye <b>🎯 Select 1 Platform to Claim Bonus</b> button ko dabakar kisi bhi specific app ko chunein.")
     else:
         lines.append("⚠️ Is number par koi bhi platform fresh/available nahi mila.")
 
@@ -1210,6 +1210,12 @@ def initiate_multi_platform_reg(call: types.CallbackQuery, phone: str):
             return
 
         avail_pids = [r["platform_id"] for r in avail]
+        priority_order = [
+            "spingold", "maxrummy", "spin777", "goldrummy", "jaiho777",
+            "jaiho91", "jaihorummy", "yonorummy", "yonoarcade", "yonoslots",
+            "rummyzip", "inrrummy", "winrummy", "jeetspin", "jaihoslots"
+        ]
+        avail_pids.sort(key=lambda pid: priority_order.index(pid) if pid in priority_order else 999)
         set_user_state(user_id, {
             "action": "multi_platform_reg",
             "phone": clean_phone,

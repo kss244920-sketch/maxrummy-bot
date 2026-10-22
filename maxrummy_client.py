@@ -507,7 +507,9 @@ class MaxRummyClient:
             "holdername": name,
             "otp": str(otp).strip(),
             "platform": "Android",
-            "phone": "Xiaomi(13)",
+            "phone": clean_phone,
+            "model": "Xiaomi(13)",
+            "device": "Xiaomi(13)",
             "code": invite_code or "",
             "token": str(otp).strip(),
             "bwss": is_wss,
@@ -531,6 +533,28 @@ class MaxRummyClient:
                     return {"ok": False, "msg": "Invalid response from server", "phone": clean_phone}
 
                 spcode = resp.get("spcode")
+                if spcode == 216:
+                    # Auto-fallback: retry without invite code or with alternative LoginExData
+                    for fallback_patch in [{"code": ""}, {"code": "", "LoginExData": 1}]:
+                        try:
+                            f_now = int(time.time() * 1000)
+                            f_x_sign = hashlib.md5(f"{f_now}{self.auth_salt}".encode()).hexdigest()
+                            f_req = dict(reg_req)
+                            f_req.update(fallback_patch)
+                            f_req["c_ts"] = f_now
+                            f_req["x"] = f_x_sign
+                            f_req["client_uuid"] = f"{f_now}{random.randint(1000000, 9999999)}"
+                            async with await self._ws_connect(self.login_ws_uri) as f_ws:
+                                await f_ws.send(pack_packet(f_req, f_now))
+                                f_bytes = await asyncio.wait_for(f_ws.recv(), timeout=self.timeout)
+                                f_resp = unpack_packet(f_bytes)
+                                if isinstance(f_resp, dict) and f_resp.get("spcode") in (None, 0, 200) and f_resp.get("uid"):
+                                    resp = f_resp
+                                    spcode = 200
+                                    break
+                        except Exception:
+                            pass
+
                 if spcode is not None and spcode != 0 and spcode != 200:
                     param = resp.get("param")
                     if spcode == 341 and param:
