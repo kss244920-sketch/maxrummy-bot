@@ -282,11 +282,18 @@ class MaxRummyClient:
 
         try:
             return await websockets.connect(uri, **ws_kwargs)
-        except websockets.exceptions.InvalidStatusCode as e:
-            if getattr(e, "status_code", 0) in (403, 400):
-                # Retry cleanly without Origin header if server blocks it
-                ws_kwargs.pop("additional_headers", None)
-                ws_kwargs.pop("extra_headers", None)
+        except Exception as e:
+            status_code = getattr(e, "status_code", None)
+            if status_code is None and hasattr(e, "response"):
+                status_code = getattr(e.response, "status_code", None)
+
+            if status_code in (400, 403):
+                # Retry cleanly with User-Agent but without Origin header if server blocks it
+                clean_headers = {"User-Agent": ua}
+                if "additional_headers" in ws_kwargs:
+                    ws_kwargs["additional_headers"] = clean_headers
+                elif "extra_headers" in ws_kwargs:
+                    ws_kwargs["extra_headers"] = clean_headers
                 return await websockets.connect(uri, **ws_kwargs)
             raise
 
@@ -486,8 +493,12 @@ class MaxRummyClient:
         is_wss = 1 if self.login_ws_uri.startswith("wss://") else 0
         reg_req = {
             "c": MSG_LOGIN,
+            "c_ts": now,
+            "x": x_sign,
+            "c_idx": 1,
             "user": clean_phone,
             "passwd": password,
+            "pwd": password,
             "app": self.app_id,
             "v": self.res_version,
             "av": self.app_version,
