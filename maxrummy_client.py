@@ -280,7 +280,15 @@ class MaxRummyClient:
         except Exception:
             pass
 
-        return await websockets.connect(uri, **ws_kwargs)
+        try:
+            return await websockets.connect(uri, **ws_kwargs)
+        except websockets.exceptions.InvalidStatusCode as e:
+            if getattr(e, "status_code", 0) in (403, 400):
+                # Retry cleanly without Origin header if server blocks it
+                ws_kwargs.pop("additional_headers", None)
+                ws_kwargs.pop("extra_headers", None)
+                return await websockets.connect(uri, **ws_kwargs)
+            raise
 
     async def login_async(self, phone: str, password: str) -> Dict[str, Any]:
         """
@@ -475,14 +483,11 @@ class MaxRummyClient:
         # Android device ID: 16-character lowercase hex string
         device_id = hashlib.md5(f"device_{clean_phone}_{self.platform_id}".encode()).hexdigest()[:16]
 
+        is_wss = 1 if self.login_ws_uri.startswith("wss://") else 0
         reg_req = {
             "c": MSG_LOGIN,
-            "c_ts": now,
-            "x": x_sign,
-            "c_idx": 1,
             "user": clean_phone,
             "passwd": password,
-            "pwd": password,
             "app": self.app_id,
             "v": self.res_version,
             "av": self.app_version,
@@ -492,9 +497,9 @@ class MaxRummyClient:
             "otp": str(otp).strip(),
             "platform": "Android",
             "phone": "Xiaomi(13)",
-            "code": invite_code,
+            "code": invite_code or "",
             "token": str(otp).strip(),
-            "bwss": 1,
+            "bwss": is_wss,
             "LoginExData": "mb_reg",
             "language": 2,
             "dlan": "en-US",
