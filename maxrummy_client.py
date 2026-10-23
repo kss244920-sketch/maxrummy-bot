@@ -516,8 +516,6 @@ class MaxRummyClient:
             "otp": str(otp).strip(),
             "platform": "Android",
             "phone": "Xiaomi(13)",
-            "model": "Xiaomi(13)",
-            "device": "Xiaomi(13)",
             "code": "",
             "token": str(otp).strip(),
             "bwss": is_wss,
