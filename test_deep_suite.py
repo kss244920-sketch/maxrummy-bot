@@ -107,9 +107,9 @@ class TestMaxRummyDeepSuite(unittest.TestCase):
 
     def test_04_client_instantiation_and_defaults(self):
         """Verify MaxRummyClient correctly initializes for any platform."""
-        # Default (SpinGold)
+        # Default (Max Rummy / SpinGold fallback)
         c_default = MaxRummyClient()
-        self.assertEqual(c_default.platform_id, "spingold")
+        self.assertIn(c_default.platform_id, ("maxrummy", "spingold"))
         self.assertTrue(c_default.login_ws_uri.startswith("wss://"))
         
         # Specific platform by id

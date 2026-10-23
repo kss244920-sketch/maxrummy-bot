@@ -176,31 +176,31 @@ def clean_phone_number(phone: str) -> str:
 
 
 class MaxRummyClient:
-    def __init__(self, platform: Optional[Any] = None, timeout: float = 8.0):
+    def __init__(self, platform: Optional[Any] = None, timeout: float = 12.0):
         self.timeout = timeout
         self.session = requests.Session()
 
-        # Load platform config or default to SpinGold
+        # Load platform config or default to Max Rummy
         if isinstance(platform, dict):
             self.platform = platform
         elif isinstance(platform, str) and platform in PLATFORMS_MAP:
             self.platform = PLATFORMS_MAP[platform]
         else:
-            self.platform = PLATFORMS_MAP.get("spingold", {
-                "id": "spingold",
-                "name": "Spin Gold",
+            self.platform = PLATFORMS_MAP.get("maxrummy") or PLATFORMS_MAP.get("spingold", {
+                "id": "maxrummy",
+                "name": "Max Rummy",
                 "app_id": 17,
-                "bundle_id": "com.spin.glg.games",
-                "app_version": "1.1.9",
-                "res_version": "1.2.1.3",
-                "login_server": "lo.ghjio08.com",
-                "sms_otp_url": "https://service.eujujo08.com/sms/dosend",
+                "bundle_id": "com.maxfun.rmy.games",
+                "app_version": "1.0.3",
+                "res_version": "1.1.1.0",
+                "login_server": "lo.cw237rjwa3o8.com",
+                "sms_otp_url": "https://service.cwh3218shj3iu.com/sms/dosend",
                 "auth_salt": "hero888",
-                "invite_code": "H1QKDHCU"
+                "invite_code": "QUMZJ6HHDP4"
             })
 
-        self.platform_id = self.platform.get("id", "spingold")
-        self.platform_name = self.platform.get("name", "Spin Gold")
+        self.platform_id = self.platform.get("id", "maxrummy")
+        self.platform_name = self.platform.get("name", "Max Rummy")
         self.login_server = self.platform.get("login_server", LOGIN_SERVER_HOST)
         self.login_ws_uri = f"wss://{self.login_server}/ws" if not self.login_server.startswith("ws") else self.login_server
         self.sms_otp_url = self.platform.get("sms_otp_url", SMS_OTP_URL)
@@ -263,8 +263,8 @@ class MaxRummyClient:
 
         ws_kwargs = {
             "ssl": ssl_ctx,
-            "open_timeout": self.timeout,
-            "close_timeout": 1.0,
+            "open_timeout": max(self.timeout, 12.0),
+            "close_timeout": 1.5,
             "max_size": 10 * 1024 * 1024,
             "family": socket.AF_INET
         }
@@ -280,22 +280,30 @@ class MaxRummyClient:
         except Exception:
             pass
 
-        try:
-            return await websockets.connect(uri, **ws_kwargs)
-        except Exception as e:
-            status_code = getattr(e, "status_code", None)
-            if status_code is None and hasattr(e, "response"):
-                status_code = getattr(e.response, "status_code", None)
-
-            if status_code in (400, 403):
-                # Retry cleanly with User-Agent but without Origin header if server blocks it
-                clean_headers = {"User-Agent": ua}
-                if "additional_headers" in ws_kwargs:
-                    ws_kwargs["additional_headers"] = clean_headers
-                elif "extra_headers" in ws_kwargs:
-                    ws_kwargs["extra_headers"] = clean_headers
+        last_exc = None
+        for attempt in range(2):
+            try:
                 return await websockets.connect(uri, **ws_kwargs)
-            raise
+            except Exception as e:
+                last_exc = e
+                status_code = getattr(e, "status_code", None)
+                if status_code is None and hasattr(e, "response"):
+                    status_code = getattr(e.response, "status_code", None)
+
+                if status_code in (400, 403):
+                    # Retry cleanly with User-Agent but without Origin header if server blocks it
+                    clean_headers = {"User-Agent": ua}
+                    if "additional_headers" in ws_kwargs:
+                        ws_kwargs["additional_headers"] = clean_headers
+                    elif "extra_headers" in ws_kwargs:
+                        ws_kwargs["extra_headers"] = clean_headers
+                    try:
+                        return await websockets.connect(uri, **ws_kwargs)
+                    except Exception as inner_e:
+                        last_exc = inner_e
+                if attempt < 1:
+                    await asyncio.sleep(0.5)
+        raise last_exc
 
     async def login_async(self, phone: str, password: str) -> Dict[str, Any]:
         """

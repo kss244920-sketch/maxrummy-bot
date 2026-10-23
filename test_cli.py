@@ -16,7 +16,12 @@ from maxrummy_client import MaxRummyClient
 
 def main():
     parser = argparse.ArgumentParser(description="MaxRummy CLI Test Tool")
+    parser.add_argument("--platform", "-P", type=str, default="maxrummy", help="Platform ID (default: maxrummy)")
     subparsers = parser.add_subparsers(dest="command", help="Sub-command to run")
+
+    # Command: probe
+    p_probe = subparsers.add_parser("probe", help="Probe if phone is registered on platform")
+    p_probe.add_argument("phone", type=str, help="10-digit mobile number")
 
     # Command: send-otp
     p_otp = subparsers.add_parser("send-otp", help="Send OTP to phone number")
@@ -45,7 +50,19 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    client = MaxRummyClient()
+    client = MaxRummyClient(platform=args.platform)
+
+    if args.command == "probe":
+        print(f"⏳ Probing registration status for {args.phone} on {client.platform_name}...")
+        import asyncio
+        res = asyncio.run(client.login_async(args.phone, "ProbePass12345"))
+        print("\n--- Result ---")
+        if res.get("spcode") == 955:
+            print(f"🟢 FRESH / AVAILABLE! Phone {args.phone} is NOT registered yet on {client.platform_name}.")
+        elif res.get("spcode") == 333:
+            print(f"🔴 REGISTERED! Phone {args.phone} is ALREADY registered on {client.platform_name}.")
+        else:
+            print(json.dumps(res, indent=2))
 
     if args.command == "send-otp":
         print(f"⏳ Sending OTP (type={args.type}) to {args.phone}...")
