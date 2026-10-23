@@ -518,7 +518,7 @@ class MaxRummyClient:
             "phone": "Xiaomi(13)",
             "model": "Xiaomi(13)",
             "device": "Xiaomi(13)",
-            "code": invite_code or "",
+            "code": "",
             "token": str(otp).strip(),
             "bwss": is_wss,
             "LoginExData": "mb_reg",
