@@ -6,8 +6,9 @@
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003907841421",
   "admin_user_ids": [
+    8327850869,
     6217522461,
-    8327850869
+    8219398815
   ],
   "whitelisted_user_ids": [],
   "user_registry": {
@@ -32,13 +33,31 @@
       "last_active": 1792321177.4665499,
       "user_log_channel": null,
       "user_storage_channel": null
+    },
+    "999999999": {
+      "user_id": 999999999,
+      "username": "",
+      "first_name": "",
+      "role": "\u26aa Guest",
+      "tokens": 4,
+      "joined_at": 1792742669.6807094,
+      "last_active": 1792742669.6807094,
+      "user_log_channel": null,
+      "user_storage_channel": null
+    },
+    "8219398815": {
+      "user_id": 8219398815,
+      "username": "Piyush",
+      "first_name": "Piyush",
+      "role": "\ud83d\udc51 Owner / Super Admin",
+      "tokens": 999999
     }
   },
   "admin_daily_usage": {
     "6217522461": {
-      "date": "2026-10-21",
+      "date": "2026-10-23",
       "used": 0,
-      "last_reset": 1792597033.9837015
+      "last_reset": 1792742669.6777205
     }
   }
 }
