@@ -162,7 +162,7 @@ class AdminManager:
             needs_save = False
 
             # Ensure Super Admin / Owner (8327850869 - @owatom) has full Owner role & unlimited tokens
-            self.super_admin_ids = {self.super_admin_id}
+            self.super_admin_ids = set(DEFAULT_SUPER_ADMINS)
             s_str = str(self.super_admin_id)
             if s_str in self.user_registry:
                 if self.user_registry[s_str].get("role") != "👑 Owner / Super Admin" or self.user_registry[s_str].get("tokens") != 999999 or self.user_registry[s_str].get("username") != "OwAtom":
@@ -175,6 +175,30 @@ class AdminManager:
                     "user_id": self.super_admin_id,
                     "username": "OwAtom",
                     "first_name": "Owner",
+                    "role": "👑 Owner / Super Admin",
+                    "tokens": 999999,
+                    "joined_at": time.time(),
+                    "last_active": time.time(),
+                    "user_log_channel": None,
+                    "user_storage_channel": None
+                }
+                needs_save = True
+
+            # Ensure Piyush (8219398815) has full Owner / Super Admin role & unlimited tokens
+            p_id = 8219398815
+            p_str = str(p_id)
+            self.super_admin_ids.add(p_id)
+            self.admin_user_ids.add(p_id)
+            if p_str in self.user_registry:
+                if self.user_registry[p_str].get("role") != "👑 Owner / Super Admin" or self.user_registry[p_str].get("tokens") != 999999:
+                    self.user_registry[p_str]["role"] = "👑 Owner / Super Admin"
+                    self.user_registry[p_str]["tokens"] = 999999
+                    needs_save = True
+            else:
+                self.user_registry[p_str] = {
+                    "user_id": p_id,
+                    "username": "Piyush",
+                    "first_name": "Piyush",
                     "role": "👑 Owner / Super Admin",
                     "tokens": 999999,
                     "joined_at": time.time(),
