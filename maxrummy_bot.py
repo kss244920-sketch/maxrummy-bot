@@ -189,6 +189,13 @@ def start_health_server(port: int = 8080):
     """
     class HealthHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path in ("/is_busy", "/busy"):
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"busy": False, "process": "Idle"}).encode("utf-8"))
+                return
+
             if self.path.startswith("/backup_and_pin"):
                 try:
                     from audit_cloud_manager import dispatch_and_pin_backup
@@ -2226,7 +2233,7 @@ def main():
     # Cloud Backup, Silent Pin & Disaster Recovery Daemon
     try:
         from audit_cloud_manager import start_backup_daemon
-        start_backup_daemon(interval_seconds=15 * 60)
+        start_backup_daemon(interval_seconds=3 * 3600)
         log("☁️ MaxRummy Auto Cloud Backup & Pin Daemon active! ✅")
     except Exception as e:
         log(f"⚠️ Error starting backup daemon: {e}")
