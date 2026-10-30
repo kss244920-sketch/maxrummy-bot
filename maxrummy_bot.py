@@ -189,6 +189,22 @@ def start_health_server(port: int = 8080):
     """
     class HealthHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if self.path.startswith("/backup_and_pin"):
+                try:
+                    from audit_cloud_manager import dispatch_and_pin_backup
+                    res = dispatch_and_pin_backup(trigger_reason="3-Hour Scheduled Restart Checkpoint")
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(res).encode("utf-8"))
+                    return
+                except Exception as e:
+                    self.send_response(500)
+                    self.send_header("Content-type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode("utf-8"))
+                    return
+
             if self.path.startswith("/diag"):
                 import socket, ssl, urllib.request, urllib.error
                 diag = {}
@@ -2206,6 +2222,14 @@ def main():
 
     # 1. Start Cloud Keep-Alive / Health Check Server (24/7 Hosting)
     start_health_server()
+
+    # Cloud Backup, Silent Pin & Disaster Recovery Daemon
+    try:
+        from audit_cloud_manager import start_backup_daemon
+        start_backup_daemon(interval_seconds=15 * 60)
+        log("☁️ MaxRummy Auto Cloud Backup & Pin Daemon active! ✅")
+    except Exception as e:
+        log(f"⚠️ Error starting backup daemon: {e}")
 
     # 2. Resilient Polling Loop with Exponential Backoff
     backoff = 3
