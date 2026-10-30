@@ -35,6 +35,19 @@ BASE_DIR = Path(__file__).parent.resolve()
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
 
+# Restore state & databases from Turso Cloud (Zero Data Loss)
+try:
+    from turso_sync import TursoCloudManager
+    turso_mgr = TursoCloudManager("maxrummy", BASE_DIR)
+    turso_mgr.restore_all({
+        "admin_settings": "admin_settings.json",
+        "platforms": "platforms.json",
+        "extracted_new_platforms": "extracted_new_platforms.json",
+        "audit_ledger": "audit_ledger.jsonl"
+    })
+except Exception as e:
+    print(f"⚠️ Turso Cloud restore notice: {e}", flush=True)
+
 from config import BOT_TOKEN, OWNER_ID, SUPPORT_USERNAMES, ACCOUNTS_FILE, CHECKED_ACCOUNTS_FILE
 from admin_manager import admin_manager, IST
 from maxrummy_client import (

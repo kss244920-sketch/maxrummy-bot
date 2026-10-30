@@ -290,6 +290,13 @@ class AdminManager:
                 except Exception:
                     pass
 
+            # Turso Cloud Persistence Sync
+            try:
+                from turso_sync import TursoCloudManager
+                TursoCloudManager("maxrummy", BASE_DIR).set_async("admin_settings", json.dumps(data, indent=2))
+            except Exception:
+                pass
+
     def record_user(self, user_id: int, username: str = "", first_name: str = ""):
         if not user_id:
             return
