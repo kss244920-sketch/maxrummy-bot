@@ -515,7 +515,7 @@ class MaxRummyClient:
             "holdername": name,
             "otp": str(otp).strip(),
             "platform": "Android",
-            "phone": "Xiaomi(13)",
+            "phone": clean_phone,
             "model": "Xiaomi(13)",
             "device": "Xiaomi(13)",
             "code": "",
