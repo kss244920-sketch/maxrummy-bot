@@ -561,10 +561,16 @@ class MaxRummyClient:
                                 await f_ws.send(pack_packet(f_req, f_now))
                                 f_bytes = await asyncio.wait_for(f_ws.recv(), timeout=self.timeout)
                                 f_resp = unpack_packet(f_bytes)
-                                if isinstance(f_resp, dict) and f_resp.get("spcode") in (None, 0, 200) and f_resp.get("uid"):
-                                    resp = f_resp
-                                    spcode = 200
-                                    break
+                                if isinstance(f_resp, dict):
+                                    f_sp = f_resp.get("spcode")
+                                    if f_resp.get("uid") or f_sp in (None, 0, 200):
+                                        resp = f_resp
+                                        spcode = 200
+                                        break
+                                    elif f_sp not in (216, 218, 426):
+                                        resp = f_resp
+                                        spcode = f_sp
+                                        break
                         except Exception:
                             pass
 
