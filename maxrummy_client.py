@@ -515,7 +515,9 @@ class MaxRummyClient:
             "holdername": name,
             "otp": str(otp).strip(),
             "platform": "Android",
-            "phone": clean_phone,
+            "phone": "Xiaomi(13)",
+            "model": "Xiaomi(13)",
+            "device": "Xiaomi(13)",
             "code": invite_code or "",
             "token": str(otp).strip(),
             "bwss": is_wss,
@@ -539,9 +541,14 @@ class MaxRummyClient:
                     return {"ok": False, "msg": "Invalid response from server", "phone": clean_phone}
 
                 spcode = resp.get("spcode")
-                if spcode == 216:
-                    # Auto-fallback: retry without invite code or with alternative LoginExData
-                    for fallback_patch in [{"code": ""}, {"code": "", "LoginExData": 1}]:
+                if spcode in (216, 218, 426):
+                    # Auto-fallback: retry without invite code or with alternative LoginExData / phone formats
+                    for fallback_patch in [
+                        {"code": ""},
+                        {"code": "", "phone": clean_phone},
+                        {"code": "", "LoginExData": 1},
+                        {"code": "", "phone": "Xiaomi(13)", "LoginExData": 1}
+                    ]:
                         try:
                             f_now = int(time.time() * 1000)
                             f_x_sign = hashlib.md5(f"{f_now}{self.auth_salt}".encode()).hexdigest()
@@ -565,7 +572,11 @@ class MaxRummyClient:
                     param = resp.get("param")
                     if spcode == 341 and param:
                         mins, secs = divmod(int(param), 60)
-                        err_msg = f"Too many attempts. Number on cooldown for {mins}m {secs}s"
+                        err_msg = f"Number on cooldown for {mins}m {secs}s! (Too many attempts. Kripya thoda wait karein ya doosra number try karein)"
+                    elif spcode in (201, 554, 555):
+                        err_msg = "Ye mobile number is platform par pehle se registered/bound hai! Fresh bonus ke liye Multi-Platform Checker se un apps par register karein jahan number fresh (🟢) hai."
+                    elif spcode == 334:
+                        err_msg = "Invalid OTP code! (OTP galat hai ya expire ho chuka hai. Kripya naya OTP generate karein aur sirf OTP code bhejein)"
                     else:
                         err_msg = SPCODE_MESSAGES.get(spcode, f"Registration failed (Error {spcode})")
                     return {
@@ -982,7 +993,7 @@ class MaxRummyClient:
                 "t": LOGIN_TYPE_PHONE,
                 "accessToken": "",
                 "platform": "Android",
-                "phone": clean_phone,
+                "phone": "Xiaomi(13)",
                 "code": "",
                 "token": "",
                 "bwss": 1,

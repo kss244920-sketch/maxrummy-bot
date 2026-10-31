@@ -104,6 +104,43 @@ def get_check_cache(user_id: int, phone: str) -> Optional[list]:
     return None
 
 
+def parse_otp_and_password(text: str, default_pwd_prefix: str = "User") -> Tuple[str, str]:
+    """
+    Robust parser for OTP and optional Password.
+    Handles:
+      - '123456' -> ('123456', 'User12345')
+      - '123456:MyPass123' -> ('123456', 'MyPass123')
+      - 'OTP: 123456' -> ('123456', 'User12345')
+      - 'otp: 123456:MyPass123' -> ('123456', 'MyPass123')
+      - 'Your verification OTP is 123456' -> ('123456', 'User12345')
+      - 'MyPass123:123456' -> ('123456', 'MyPass123')
+    """
+    raw = (text or "").strip()
+    # Strip common label prefixes like "otp:", "code:", "pin:", etc.
+    cleaned = re.sub(r'^(?:otp|code|pin)\s*[:=-]\s*', '', raw, flags=re.IGNORECASE).strip()
+
+    if ":" in cleaned:
+        parts = cleaned.split(":", 1)
+        p0 = parts[0].strip()
+        p1 = parts[1].strip()
+        if re.match(r'^\d{4,8}$', p0):
+            otp = p0
+            pwd = p1 or f"{default_pwd_prefix}{random.randint(10000, 99999)}"
+        elif re.match(r'^\d{4,8}$', p1):
+            otp = p1
+            pwd = p0 or f"{default_pwd_prefix}{random.randint(10000, 99999)}"
+        else:
+            m = re.search(r'\b\d{4,8}\b', cleaned)
+            otp = m.group(0) if m else p0
+            pwd = p1 or f"{default_pwd_prefix}{random.randint(10000, 99999)}"
+    else:
+        m = re.search(r'\b\d{4,8}\b', cleaned)
+        otp = m.group(0) if m else cleaned
+        pwd = f"{default_pwd_prefix}{random.randint(10000, 99999)}"
+
+    return otp, pwd
+
+
 def is_rate_limited(user_id: int, min_interval: float = 0.5) -> bool:
     """Anti-Flood protection against Telegram 429 flood bans."""
     if admin_manager.is_admin(user_id):
@@ -1120,14 +1157,7 @@ def step_platform_otp_finish(message: types.Message):
         bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.", reply_markup=get_main_keyboard(user_id))
         return
 
-    text = message.text.strip()
-    if ":" in text:
-        parts = text.split(":", 1)
-        otp = parts[0].strip()
-        pwd = parts[1].strip()
-    else:
-        otp = text
-        pwd = f"User{random.randint(10000, 99999)}"
+    otp, pwd = parse_otp_and_password(message.text or "")
 
     phone = state["phone"]
     p_id = state["platform_id"]
@@ -1395,14 +1425,7 @@ def step_multi_platform_otp(message: types.Message):
         trigger_next_multi_reg(message.chat.id, user_id)
         return
 
-    text = message.text.strip()
-    if ":" in text:
-        parts = text.split(":", 1)
-        otp = parts[0].strip()
-        pwd = parts[1].strip()
-    else:
-        otp = text
-        pwd = f"User{random.randint(10000, 99999)}"
+    otp, pwd = parse_otp_and_password(message.text or "")
 
     status_msg = bot.reply_to(message, f"⏳ <b>[{html.escape(p_name)}]</b> Registering & claiming Welcome Bonus...")
 
@@ -1508,9 +1531,10 @@ def step_reg_get_phone(message: types.Message):
     bot.edit_message_text(
         f"✅ <b>OTP Sent Successfully!</b>\n\n"
         f"📱 <b>Mobile:</b> <code>{phone}</code>\n\n"
-        f"Kripya received <b>OTP aur Password</b> bhejein format me:\n"
-        f"<code>OTP:Password</code>\n\n"
-        f"<i>(Example: 123456:Pass@1234)</i>",
+        f"Kripya received <b>OTP</b> bhejein:\n"
+        f"• Sirf OTP bhejein: <code>123456</code> <i>(auto-password set hoga)</i>\n"
+        f"• Ya format me: <code>OTP:Password</code> <i>(Example: 123456:Pass@1234)</i>\n\n"
+        f"Cancel karne ke liye /cancel bhejein.",
         message.chat.id,
         status_msg.message_id
     )
@@ -1529,14 +1553,7 @@ def step_reg_finish(message: types.Message):
         bot.reply_to(message, "⚠️ Session expired! Kripya /start se dobara try karein.")
         return
 
-    text = message.text.strip()
-    if ":" in text:
-        parts = text.split(":", 1)
-        otp = parts[0].strip()
-        pwd = parts[1].strip()
-    else:
-        otp = text
-        pwd = f"User{random.randint(10000, 99999)}"
+    otp, pwd = parse_otp_and_password(message.text or "")
 
     phone = state["reg_phone"]
     status_msg = bot.reply_to(message, f"⏳ Registering <code>{phone}</code> on server & claiming Bind Bonus...")
@@ -1683,14 +1700,7 @@ def step_bind_phone_step3(message: types.Message):
         bot.reply_to(message, "⚠️ Session expired. /start se dobara karein.")
         return
 
-    text = message.text.strip()
-    if ":" in text:
-        parts = text.split(":", 1)
-        otp = parts[0].strip()
-        new_pwd = parts[1].strip()
-    else:
-        otp = text
-        new_pwd = f"User@{random.randint(1000, 9999)}"
+    otp, new_pwd = parse_otp_and_password(message.text or "", default_pwd_prefix="User@")
 
     acc_user = state["bind_acc_user"]
     acc_pwd = state["bind_acc_pwd"]

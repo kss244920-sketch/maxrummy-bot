@@ -214,6 +214,35 @@ class TestMaxRummyDeepSuite(unittest.TestCase):
         self.assertGreaterEqual(success_count, 4, "At least 4 flagship platforms must connect cleanly")
         print(f"✅ Test 7 Passed: {success_count}/5 flagship platforms connected live.")
 
+    def test_08_parse_otp_and_password_robustness(self):
+        """Verify robust parsing of user-submitted OTP and password in various Telegram formats."""
+        from maxrummy_bot import parse_otp_and_password
+        
+        # Test bare OTP
+        otp, pwd = parse_otp_and_password("123456")
+        self.assertEqual(otp, "123456")
+        self.assertTrue(pwd.startswith("User"))
+
+        # Test OTP:Password format
+        otp, pwd = parse_otp_and_password("123456:Pass@1234")
+        self.assertEqual(otp, "123456")
+        self.assertEqual(pwd, "Pass@1234")
+
+        # Test user typing 'OTP: 123456'
+        otp, pwd = parse_otp_and_password("OTP: 123456")
+        self.assertEqual(otp, "123456")
+
+        # Test user typing 'otp: 123456:MyPass123'
+        otp, pwd = parse_otp_and_password("otp: 123456:MyPass123")
+        self.assertEqual(otp, "123456")
+        self.assertEqual(pwd, "MyPass123")
+
+        # Test copy-pasted SMS text
+        otp, pwd = parse_otp_and_password("Your verification OTP is 654321 for Yono.")
+        self.assertEqual(otp, "654321")
+
+        print("✅ Test 8 Passed: OTP & password parsing handles all Telegram user formats cleanly.")
+
 
 if __name__ == "__main__":
     unittest.main()
