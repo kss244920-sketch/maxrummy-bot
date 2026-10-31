@@ -24,7 +24,9 @@ TARGET_FILES = [
     "audit_ledger.jsonl",
     "admin_settings.json",
     "platforms.json",
-    "extracted_new_platforms.json"
+    "extracted_new_platforms.json",
+    "registered_accounts.txt",
+    "checked_accounts.txt"
 ]
 
 def get_bot_token():
