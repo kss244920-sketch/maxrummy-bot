@@ -517,13 +517,12 @@ class MaxRummyClient:
             "holdername": name,
             "otp": str(otp).strip(),
             "platform": "Android",
-            "phone": clean_phone,
+            "phone": "Xiaomi(13)",
             "model": "Xiaomi(13)",
             "device": "Xiaomi(13)",
-            "code": str(otp).strip(),
-            "otp": str(otp).strip(),
+            "code": "",
             "token": str(otp).strip(),
-            "reccode": invite_code or self.invite_code or "",
+            "reccode": invite_code or "",
             "bwss": is_wss,
             "LoginExData": "mb_reg",
             "language": 2,
@@ -541,6 +540,7 @@ class MaxRummyClient:
 
                 resp_bytes = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                 resp = unpack_packet(resp_bytes)
+                print(f"🔍 [DEBUG WS RESP 1]: {resp}")
                 if not resp or not isinstance(resp, dict):
                     return {"ok": False, "msg": "Invalid response from server", "phone": clean_phone}
 
@@ -567,6 +567,7 @@ class MaxRummyClient:
                                 await f_ws.send(pack_packet(f_req, f_now))
                                 f_bytes = await asyncio.wait_for(f_ws.recv(), timeout=self.timeout)
                                 f_resp = unpack_packet(f_bytes)
+                                print(f"🔍 [DEBUG WS FALLBACK RESP]: {f_resp}")
                                 if isinstance(f_resp, dict):
                                     f_sp = f_resp.get("spcode")
                                     if f_resp.get("uid") or f_sp in (None, 0, 200):
