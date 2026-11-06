@@ -529,7 +529,7 @@ class MaxRummyClient:
             "phone": clean_phone,
             "model": "Xiaomi(13)",
             "device": "Xiaomi(13)",
-            "code": clean_invite,
+            "code": "",
             "token": str(otp).strip(),
             "reccode": clean_invite,
             "bwss": is_wss,
