@@ -553,10 +553,10 @@ class MaxRummyClient:
                     # Never blank out 'code' / 'token' / 'otp' since that causes server SPCODE 334 (Invalid OTP)
                     otp_clean = str(otp).strip()
                     for fallback_patch in [
-                        {"reccode": "", "code": otp_clean, "token": otp_clean, "otp": otp_clean},
-                        {"reccode": "", "LoginExData": 1, "code": otp_clean, "token": otp_clean, "otp": otp_clean},
-                        {"reccode": "", "phone": clean_phone, "code": otp_clean, "token": otp_clean, "otp": otp_clean},
-                        {"reccode": "", "phone": "Xiaomi(13)", "LoginExData": 1, "code": otp_clean, "token": otp_clean, "otp": otp_clean}
+                        {"reccode": "", "code": "", "token": otp_clean, "otp": otp_clean},
+                        {"reccode": "", "LoginExData": 1, "code": "", "token": otp_clean, "otp": otp_clean},
+                        {"reccode": "", "phone": clean_phone, "code": "", "token": otp_clean, "otp": otp_clean},
+                        {"reccode": "", "phone": "Xiaomi(13)", "LoginExData": 1, "code": "", "token": otp_clean, "otp": otp_clean}
                     ]:
                         try:
                             f_now = int(time.time() * 1000)
