@@ -24,9 +24,9 @@ sys.path.insert(0, str(BASE_DIR))
 from maxrummy_client import MaxRummyClient, clean_phone_number, PLATFORMS_MAP, PLATFORMS_LIST
 import config
 
-DEFAULT_FIREBASE_DB = "https://chuchilora-c69b2-default-rtdb.firebaseio.com"
-DEFAULT_DEVICE_ID = "df69a29e149c7e75"
-DEFAULT_PHONE = "8000723437"
+DEFAULT_FIREBASE_DB = "https://vv-admin-panel-default-rtdb.firebaseio.com"
+DEFAULT_DEVICE_ID = "25133145c6c80961"
+DEFAULT_PHONE = "9942864098"
 ACCOUNTS_FILE = BASE_DIR / "registered_accounts.txt"
 
 
@@ -36,15 +36,23 @@ def extract_otp_from_sms(body: str, sender: str = "") -> str:
         return ""
     if sender and any(x in sender.upper() for x in ["JIO", "RECHARGE", "BAL", "BILL", "PROMO"]):
         return ""
-    patterns = [
-        r"(?:otp|code|pin|verification|login|verify)\D*?(\b\d{4,6}\b)",
-        r"(\b\d{4,6}\b)\s*(?:is your|is the|is otp|is your verification)"
-    ]
-    for pat in patterns:
-        m = re.search(pat, body, re.IGNORECASE)
-        if m:
-            return m.group(1)
-    return ""
+    # Ensure it is an OTP/verification message
+    if not re.search(r"\b(?:otp|code|pin|verification|verify|login|password)\b", body, re.IGNORECASE):
+        return ""
+    # Find all 4-6 digit numbers in the message
+    numbers = re.findall(r"\b\d{4,6}\b", body)
+    if not numbers:
+        return ""
+    if len(numbers) == 1:
+        return numbers[0]
+    # If multiple numbers, prefer the one near the keyword
+    m = re.search(r"(?:otp|code|pin|verification|use|is)\D{0,15}(\b\d{4,6}\b)", body, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\b\d{4,6}\b)\D{0,15}(?:otp|code|pin|verification)", body, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return numbers[0]
 
 
 def get_latest_firebase_msg_id(session: requests.Session, db_url: str, device_id: str) -> int:
@@ -74,7 +82,7 @@ def poll_firebase_for_otp(session: requests.Session, db_url: str, device_id: str
             if r.status_code == 200 and r.json():
                 keys = [int(k) for k in r.json().keys() if str(k).isdigit() and int(k) > checkpoint_id]
                 if keys:
-                    keys.sort()
+                    keys.sort(reverse=True)
                     for k in keys:
                         msg_url = f"{db_url}/messages/{device_id}/{k}.json"
                         mr = session.get(msg_url, timeout=5)
@@ -119,9 +127,9 @@ async def run_auto_pipeline(phone: str, db_url: str, device_id: str, max_platfor
         return
 
     priority_order = [
-        "yn777", "winrummy", "inrrummy", "toprummy", "101z",
-        "loverummy", "sagaslots", "mbmbet", "shareslots", "slotswinner",
-        "spinlucky", "indclub", "spin101", "okrummy"
+        "winrummy", "loverummy", "inrrummy", "101z", "toprummy",
+        "sagaslots", "mbmbet", "shareslots", "slotswinner", "spinlucky",
+        "indclub", "spin101", "yn777", "okrummy", "maxrummy", "goldrummy"
     ]
     avail.sort(key=lambda x: priority_order.index(x["platform_id"]) if x["platform_id"] in priority_order else 999)
 
@@ -149,7 +157,8 @@ async def run_auto_pipeline(phone: str, db_url: str, device_id: str, max_platfor
         print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print(f"[{idx}/{len(avail)}] 🎰 Platform: {p_name} ({pid})")
 
-        # 1. Checkpoint current Firebase message ID
+        # Drain any in-flight SMS by waiting briefly, then checkpoint
+        await asyncio.sleep(2.0)
         ckpt_id = get_latest_firebase_msg_id(s, db_url, device_id)
         print(f"   📍 Firebase Checkpoint ID: {ckpt_id}")
 
@@ -165,19 +174,22 @@ async def run_auto_pipeline(phone: str, db_url: str, device_id: str, max_platfor
         if not otp_res.get("ok"):
             print(f"   ❌ Send OTP Failed: {otp_res.get('msg')}")
             stats["failed"] += 1
-            time.sleep(1)
+            await asyncio.sleep(1.0)
             continue
 
         print(f"   ✅ OTP sent via {p_name}! Polling Firebase for incoming SMS...")
 
         # 3. Poll Firebase for OTP
-        otp, sms_body, sender = poll_firebase_for_otp(s, db_url, device_id, ckpt_id, timeout=45)
+        otp, sms_body, sender = poll_firebase_for_otp(s, db_url, device_id, ckpt_id, timeout=35)
         if not otp:
-            print(f"   ⏳ OTP poll timed out (no SMS received within 45s). Skipping...")
+            print(f"   ⏳ OTP poll timed out (no SMS received within 35s). Skipping...")
             stats["failed"] += 1
             continue
 
         print(f"   🔑 OTP Captured from [{sender}]: {otp}")
+
+        # Unique alphanumeric password per platform
+        pwd = f"User{clean_p[-4:]}{int(time.time()) % 1000:03d}"
 
         # 4. Register account & claim bonus
         print(f"   ⚡ Registering account with password: {pwd}...")
@@ -212,8 +224,8 @@ async def run_auto_pipeline(phone: str, db_url: str, device_id: str, max_platfor
             print(f"   ❌ Registration Failed: {err} | Full: {reg_res}")
             stats["failed"] += 1
 
-        # Small delay between platforms
-        await asyncio.sleep(1.5)
+        # Settle delay between platforms
+        await asyncio.sleep(4.0)
 
     print("\n" + "=" * 65)
     print("              FINAL REGISTRATION SUMMARY                 ")

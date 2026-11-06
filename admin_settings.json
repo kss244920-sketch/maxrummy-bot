@@ -39,7 +39,7 @@
       "username": "",
       "first_name": "",
       "role": "\u26aa Guest",
-      "tokens": 4,
+      "tokens": 5,
       "joined_at": 1792742669.6807094,
       "last_active": 1792742669.6807094,
       "user_log_channel": null,
@@ -50,7 +50,7 @@
       "username": "Piyush",
       "first_name": "Piyush",
       "role": "\ud83d\udc51 Owner / Super Admin",
-      "tokens": 1000
+      "tokens": 999999
     }
   },
   "admin_daily_usage": {
