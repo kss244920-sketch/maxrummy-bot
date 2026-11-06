@@ -494,8 +494,15 @@ class MaxRummyClient:
             last_names = ["Kumar", "Sharma", "Verma", "Singh", "Patel", "Gupta", "Yadav", "Chauhan", "Mishra", "Joshi"]
             name = f"{random.choice(first_names)} {random.choice(last_names)}"
 
-        # Use configured platform invite_code by default, fallback handles 216 automatically
-        clean_invite = (invite_code.strip() if invite_code else (self.invite_code or "")).strip()
+        # Only attach configured invite codes for verified active platforms, or when explicitly passed.
+        # Sending stale invite codes on other platforms triggers Cocos server SPCODE 216.
+        verified_invite_platforms = {"spinwinner", "dhangame", "joyrummy", "spingold"}
+        if invite_code:
+            clean_invite = invite_code.strip()
+        elif self.platform_id in verified_invite_platforms and self.invite_code:
+            clean_invite = self.invite_code.strip()
+        else:
+            clean_invite = ""
 
         now = int(time.time() * 1000)
         x_sign = hashlib.md5(f"{now}{self.auth_salt}".encode()).hexdigest()
