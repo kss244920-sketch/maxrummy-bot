@@ -494,8 +494,8 @@ class MaxRummyClient:
             last_names = ["Kumar", "Sharma", "Verma", "Singh", "Patel", "Gupta", "Yadav", "Chauhan", "Mishra", "Joshi"]
             name = f"{random.choice(first_names)} {random.choice(last_names)}"
 
-        # Do not default to stale platforms.json invite codes; use empty if not explicitly provided
-        clean_invite = invite_code.strip() if invite_code else ""
+        # Use configured platform invite_code by default, fallback handles 216 automatically
+        clean_invite = (invite_code.strip() if invite_code else (self.invite_code or "")).strip()
 
         now = int(time.time() * 1000)
         x_sign = hashlib.md5(f"{now}{self.auth_salt}".encode()).hexdigest()
