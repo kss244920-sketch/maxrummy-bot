@@ -224,7 +224,9 @@ class MaxRummyClient:
         params = {
             "phone": clean_phone,
             "channel": channel,
-            "otptype": otptype
+            "otptype": otptype,
+            "app": self.app_id,
+            "bundleid": self.bundle_id
         }
         try:
             resp = self.session.get(self.sms_otp_url, params=params, timeout=self.timeout)
@@ -518,8 +520,10 @@ class MaxRummyClient:
             "phone": clean_phone,
             "model": "Xiaomi(13)",
             "device": "Xiaomi(13)",
-            "code": "",
+            "code": str(otp).strip(),
+            "otp": str(otp).strip(),
             "token": str(otp).strip(),
+            "reccode": invite_code or self.invite_code or "",
             "bwss": is_wss,
             "LoginExData": "mb_reg",
             "language": 2,
@@ -543,11 +547,13 @@ class MaxRummyClient:
                 spcode = resp.get("spcode")
                 if spcode in (216, 218, 426):
                     # Auto-fallback: retry without invite code or with alternative LoginExData / phone formats
+                    # Never blank out 'code' / 'token' / 'otp' since that causes server SPCODE 334 (Invalid OTP)
+                    otp_clean = str(otp).strip()
                     for fallback_patch in [
-                        {"code": ""},
-                        {"code": "", "phone": clean_phone},
-                        {"code": "", "LoginExData": 1},
-                        {"code": "", "phone": "Xiaomi(13)", "LoginExData": 1}
+                        {"reccode": "", "code": otp_clean, "token": otp_clean, "otp": otp_clean},
+                        {"reccode": "", "LoginExData": 1, "code": otp_clean, "token": otp_clean, "otp": otp_clean},
+                        {"reccode": "", "phone": clean_phone, "code": otp_clean, "token": otp_clean, "otp": otp_clean},
+                        {"reccode": "", "phone": "Xiaomi(13)", "LoginExData": 1, "code": otp_clean, "token": otp_clean, "otp": otp_clean}
                     ]:
                         try:
                             f_now = int(time.time() * 1000)
@@ -605,7 +611,8 @@ class MaxRummyClient:
                 if net_server:
                     try:
                         claim_res = await self._claim_bonuses_on_node(
-                            net_server, uid, server_id, sub_id, token, device_id
+                            net_server, uid, server_id, sub_id, token, device_id,
+                            phone=clean_phone, password=password, otp=otp
                         )
                         claimed_bonus = claim_res.get("total_claimed", 0.0)
                         claim_details = claim_res.get("details", [])
@@ -616,9 +623,12 @@ class MaxRummyClient:
                     try:
                         bal_res = await self.login_async(clean_phone, password)
                         if bal_res.get("ok"):
-                            final_balance = bal_res.get("total_balance", 0.0)
+                            final_balance = bal_res.get("total_balance", final_balance)
                     except Exception:
                         pass
+
+                if claimed_bonus == 0.0 and final_balance > 0.0:
+                    claimed_bonus = final_balance
 
                 return {
                     "ok": True,
@@ -644,14 +654,21 @@ class MaxRummyClient:
         server_id: int,
         sub_id: int,
         token: str,
-        device_id: str
+        device_id: str,
+        phone: Optional[str] = None,
+        password: Optional[str] = None,
+        otp: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Internal worker to connect to node server and claim:
-        1. MsgId.GET_NEWER_GIFT_REWARDS (665) -> Bind Phone / Welcome Bonus
-        2. MsgId.EVENT_CYCLE_SIGN_REWARD (427) -> 7-Day Sign-in Reward
-        3. MsgId.EVENT_SIGN_REWARD (419) -> Daily Sign-in Reward
-        4. MsgId.REQ_REWARD_TODAY (152) -> Daily Reward
+        Internal worker to connect to node server and comprehensively claim all bonuses:
+        1. MsgId.BIND_PHONE (134) -> Explicitly binds phone if phone/otp provided
+        2. MsgId.GET_NEWER_GIFT_REWARDS (665) -> Bind Phone / Welcome Bonus
+        3. MsgId.REQ_GET_ALL_MALL_ATTACH (215) -> Claim All System Mail Attachments
+        4. MsgId.REQ_MAIL_LIST (202) -> Refresh Inbox
+        5. MsgId.EVENT_CYCLE_SIGN_REWARD (427) -> 7-Day Cycle Sign-in Reward
+        6. MsgId.EVENT_SIGN_REWARD (419) -> Daily Sign-in Reward
+        7. MsgId.REQ_REWARD_TODAY (152) -> Daily Reward
+        8. MsgId.PERSIONAL_INFO (62) -> Final wallet balance update
         """
         clean_host = net_server.replace("ws://", "").replace("wss://", "")
         proto = "ws://" if ":" in clean_host else "wss://"
@@ -664,8 +681,6 @@ class MaxRummyClient:
         coin = 0.0
         dcoin = 0.0
         ecoin = 0.0
-        got_gift_reward = False
-        got_wallet_info = False
 
         async with await self._ws_connect(node_uri) as node_ws:
             node_now = int(time.time() * 1000)
@@ -700,37 +715,94 @@ class MaxRummyClient:
             except Exception:
                 pass
 
-            # Bonus 1: Bind Phone / Welcome Gift (665)
+            initial_coin_sum = coin + dcoin + ecoin
+
+            # 1. Bind phone if OTP & Phone available
+            c_idx = 2
+            if phone and otp and password:
+                clean_target_phone = clean_phone_number(phone)
+                bind_now = int(time.time() * 1000)
+                bind_req = {
+                    "c": MSG_BIND_PHONE,
+                    "phone": clean_target_phone,
+                    "code": str(otp).strip(),
+                    "pwd": password,
+                    "name": f"User_{clean_target_phone[-4:]}",
+                    "dinfo": "{}",
+                    "c_ts": bind_now,
+                    "c_idx": c_idx
+                }
+                c_idx += 1
+                await node_ws.send(pack_packet(bind_req, bind_now))
+
+            # 2. Bonus: Bind Phone / Welcome Gift (665)
             now_1 = int(time.time() * 1000)
-            await node_ws.send(pack_packet({"c": MSG_GET_NEWER_GIFT_REWARDS, "uid": uid, "c_ts": now_1, "c_idx": 2}, now_1))
+            await node_ws.send(pack_packet({"c": MSG_GET_NEWER_GIFT_REWARDS, "uid": uid, "c_ts": now_1, "c_idx": c_idx}, now_1))
+            c_idx += 1
 
-            # Bonus 2: 7-Day Cycle Sign-in (427)
+            # 3. Bonus: One-click Claim All Mail Attachments (215)
+            now_mail = int(time.time() * 1000)
+            await node_ws.send(pack_packet({"c": MSG_REQ_GET_ALL_MALL_ATTACH, "uid": uid, "c_ts": now_mail, "c_idx": c_idx}, now_mail))
+            c_idx += 1
+
+            # 4. Refresh Mail List (202)
+            now_ml = int(time.time() * 1000)
+            await node_ws.send(pack_packet({"c": MSG_REQ_MAIL_LIST, "uid": uid, "c_ts": now_ml, "c_idx": c_idx}, now_ml))
+            c_idx += 1
+
+            # 5. Bonus: 7-Day Cycle Sign-in (427)
             now_2 = int(time.time() * 1000)
-            await node_ws.send(pack_packet({"c": MSG_EVENT_CYCLE_SIGN_REWARD, "uid": uid, "c_ts": now_2, "c_idx": 3}, now_2))
+            await node_ws.send(pack_packet({"c": MSG_EVENT_CYCLE_SIGN_REWARD, "uid": uid, "c_ts": now_2, "c_idx": c_idx}, now_2))
+            c_idx += 1
 
-            # Bonus 3: Daily Sign-in Reward (419)
+            # 6. Bonus: Daily Sign-in Reward (419)
             now_3 = int(time.time() * 1000)
-            await node_ws.send(pack_packet({"c": MSG_EVENT_SIGN_REWARD, "uid": uid, "c_ts": now_3, "c_idx": 4}, now_3))
+            await node_ws.send(pack_packet({"c": MSG_EVENT_SIGN_REWARD, "uid": uid, "c_ts": now_3, "c_idx": c_idx}, now_3))
+            c_idx += 1
 
-            # Bonus 4: Today Reward (152)
+            # 7. Bonus: Today Reward (152)
             now_4 = int(time.time() * 1000)
-            await node_ws.send(pack_packet({"c": MSG_REQ_REWARD_TODAY, "uid": uid, "c_ts": now_4, "c_idx": 5}, now_4))
+            await node_ws.send(pack_packet({"c": MSG_REQ_REWARD_TODAY, "uid": uid, "c_ts": now_4, "c_idx": c_idx}, now_4))
+            c_idx += 1
 
-            # Bind Referral / Invite Code on Node Server (Msg 28 & Msg 257)
+            # 8. Referral / Invite Code on Node Server (Msg 28 & Msg 257)
             if self.invite_code:
                 now_bind = int(time.time() * 1000)
-                await node_ws.send(pack_packet({"c": 28, "code": self.invite_code, "c_ts": now_bind, "c_idx": 6}, now_bind))
-                await node_ws.send(pack_packet({"c": 257, "code": self.invite_code, "vid": "-1", "c_ts": now_bind, "c_idx": 7}, now_bind))
+                await node_ws.send(pack_packet({"c": 28, "code": self.invite_code, "c_ts": now_bind, "c_idx": c_idx}, now_bind))
+                c_idx += 1
+                await node_ws.send(pack_packet({"c": 257, "code": self.invite_code, "vid": "-1", "c_ts": now_bind, "c_idx": c_idx}, now_bind))
+                c_idx += 1
 
-            # Refresh wallet (62)
+            # Wait briefly for node server to commit reward records before polling balance
+            await asyncio.sleep(0.5)
+
+            # 9. Refresh wallet (62)
             now_wallet = int(time.time() * 1000)
-            await node_ws.send(pack_packet({"c": MSG_PERSIONAL_INFO, "uid": uid, "otheruid": uid, "c_ts": now_wallet, "c_idx": 8}, now_wallet))
+            await node_ws.send(pack_packet({"c": MSG_PERSIONAL_INFO, "uid": uid, "otheruid": uid, "c_ts": now_wallet, "c_idx": c_idx}, now_wallet))
+
+            # Helper function to extract reward amounts flexibly
+            def _extract_reward_amount(payload: Any) -> float:
+                if not payload:
+                    return 0.0
+                if isinstance(payload, (int, float)):
+                    return float(payload)
+                if isinstance(payload, dict):
+                    # Check direct keys
+                    for k in ("coin", "addcoin", "count", "num", "amount", "money", "reward", "rewards"):
+                        val = payload.get(k)
+                        if isinstance(val, (int, float)) and val > 0:
+                            return float(val)
+                        if isinstance(val, list):
+                            return sum(_extract_reward_amount(x) for x in val)
+                elif isinstance(payload, list):
+                    return sum(_extract_reward_amount(x) for x in payload)
+                return 0.0
 
             # Gather responses
-            end_time = time.time() + 4.0
+            end_time = time.time() + 3.5
             while time.time() < end_time:
                 try:
-                    n_bytes = await asyncio.wait_for(node_ws.recv(), timeout=1.2)
+                    n_bytes = await asyncio.wait_for(node_ws.recv(), timeout=1.0)
                     n_resp = unpack_packet(n_bytes)
                     if not n_resp or not isinstance(n_resp, dict):
                         continue
@@ -738,29 +810,55 @@ class MaxRummyClient:
                     cmd = n_resp.get("c")
                     sp = n_resp.get("spcode")
 
+                    # Check 134 (Phone Bind Response)
+                    if cmd == MSG_BIND_PHONE:
+                        if n_resp.get("code") == 200 and not sp:
+                            claimed_details.append("📱 Phone Bound Successfully")
+                            # Retry Newer Gift Rewards right after binding
+                            r_now = int(time.time() * 1000)
+                            await node_ws.send(pack_packet({"c": MSG_GET_NEWER_GIFT_REWARDS, "uid": uid, "c_ts": r_now, "c_idx": 99}, r_now))
+                            await node_ws.send(pack_packet({"c": MSG_REQ_GET_ALL_MALL_ATTACH, "uid": uid, "c_ts": r_now, "c_idx": 100}, r_now))
+
                     # Check 665 (Welcome / Bind Phone Bonus)
-                    if cmd == MSG_GET_NEWER_GIFT_REWARDS:
-                        got_gift_reward = True
+                    elif cmd == MSG_GET_NEWER_GIFT_REWARDS:
                         if n_resp.get("code") == 200 and (not sp or sp == 0):
-                            rewards = n_resp.get("rewards") or []
-                            r_amt = 0.0
-                            for rw in rewards:
-                                r_amt += float(rw.get("count", rw.get("coin", rw.get("num", 0.0))))
+                            r_amt = _extract_reward_amount(n_resp.get("rewards") or n_resp.get("reward") or n_resp)
                             if r_amt > 0:
                                 total_claimed += r_amt
                                 claimed_details.append(f"🎁 Bind Bonus: ₹{r_amt:.2f}")
                             else:
                                 claimed_details.append("🎁 Bind Bonus: Claimed")
                         elif sp:
+                            # If spcode 560 ("Need to bind phone number first") and phone/otp available:
+                            if sp == 560 and phone and otp and password:
+                                clean_target_phone = clean_phone_number(phone)
+                                b_now = int(time.time() * 1000)
+                                await node_ws.send(pack_packet({
+                                    "c": MSG_BIND_PHONE,
+                                    "phone": clean_target_phone,
+                                    "code": str(otp).strip(),
+                                    "pwd": password,
+                                    "name": f"User_{clean_target_phone[-4:]}",
+                                    "dinfo": "{}",
+                                    "c_ts": b_now,
+                                    "c_idx": 98
+                                }, b_now))
                             claimed_details.append(f"Bind Bonus: {SPCODE_MESSAGES.get(sp, f'Code {sp}')}")
+
+                    # Check 215 (Mail Bonus Attachments)
+                    elif cmd == MSG_REQ_GET_ALL_MALL_ATTACH:
+                        if n_resp.get("code") == 200 and not sp:
+                            mail_amt = _extract_reward_amount(n_resp.get("rewards") or n_resp.get("attachment") or n_resp)
+                            if mail_amt > 0:
+                                total_claimed += mail_amt
+                                claimed_details.append(f"📬 Mail Bonus: ₹{mail_amt:.2f}")
+                            else:
+                                claimed_details.append("📬 Mail Attachments: Claimed")
 
                     # Check 427 (7-Day Cycle Sign-In)
                     elif cmd == MSG_EVENT_CYCLE_SIGN_REWARD:
                         if n_resp.get("code") == 200 and not sp:
-                            rewards = n_resp.get("rewards") or []
-                            r_amt = 0.0
-                            for rw in rewards:
-                                r_amt += float(rw.get("coin", rw.get("num", 0.0)))
+                            r_amt = _extract_reward_amount(n_resp.get("rewards") or n_resp.get("reward") or n_resp)
                             if r_amt > 0:
                                 total_claimed += r_amt
                                 claimed_details.append(f"📅 7-Day Bonus: ₹{r_amt:.2f}")
@@ -772,27 +870,33 @@ class MaxRummyClient:
                     # Check 419 (Daily Sign-in)
                     elif cmd == MSG_EVENT_SIGN_REWARD:
                         if n_resp.get("code") == 200 and not sp:
-                            claimed_details.append("☀️ Daily Sign-in: Claimed")
+                            r_amt = _extract_reward_amount(n_resp.get("rewards") or n_resp.get("reward") or n_resp)
+                            if r_amt > 0:
+                                total_claimed += r_amt
+                                claimed_details.append(f"☀️ Daily Sign-in: ₹{r_amt:.2f}")
+                            else:
+                                claimed_details.append("☀️ Daily Sign-in: Claimed")
 
                     # Check 152 (Today Reward)
                     elif cmd == MSG_REQ_REWARD_TODAY:
                         if n_resp.get("code") == 200:
                             claimed_details.append("🌟 Today Reward: Checked")
 
-                    if cmd == MSG_PERSIONAL_INFO:
-                        got_wallet_info = True
+                    # Check 62 (Wallet balance refresh)
+                    elif cmd == MSG_PERSIONAL_INFO:
                         p_info = n_resp.get("playerInfo") or {}
                         coin = float(p_info.get("coin", coin))
                         dcoin = float(p_info.get("dcoin", dcoin))
                         ecoin = float(p_info.get("ecoin", ecoin))
 
-                    if got_gift_reward and got_wallet_info:
-                        break
-
                 except asyncio.TimeoutError:
-                    pass
+                    break
 
         total_balance = round(coin + dcoin + ecoin, 2)
+        balance_gain = round(total_balance - initial_coin_sum, 2)
+        if total_claimed == 0.0 and balance_gain > 0:
+            total_claimed = balance_gain
+
         return {
             "total_claimed": round(total_claimed, 2),
             "details": claimed_details,
@@ -803,6 +907,7 @@ class MaxRummyClient:
         """
         Logs into an account and automatically collects all available bonuses:
         - Bind Phone / Welcome Gift (665)
+        - Mail Inbox Attachments (215)
         - 7-Day Sign-in Reward (427)
         - Daily Sign-in Reward (419)
         - Free Today Bonus (152)
@@ -825,7 +930,8 @@ class MaxRummyClient:
         bal_before = login_res.get("total_balance", 0.0)
 
         claim_info = await self._claim_bonuses_on_node(
-            net_server, uid, server_id, sub_id, token, device_id
+            net_server, uid, server_id, sub_id, token, device_id,
+            phone=clean_p, password=password
         )
 
         # Refresh balance after claim
