@@ -330,6 +330,7 @@ class MaxRummyClient:
             "c_idx": 1,
             "user": clean_phone,
             "passwd": password,
+            "pwd": password,
             "app": self.app_id,
             "v": self.res_version,
             "av": self.app_version,
@@ -350,6 +351,7 @@ class MaxRummyClient:
         }
 
         try:
+            print("🔍 EXACT LOGIN_REQ SENT:", json.dumps(login_req, indent=2))
             async with await self._ws_connect(self.login_ws_uri) as ws:
                 pkt = pack_packet(login_req, now)
                 await ws.send(pkt)
@@ -492,13 +494,13 @@ class MaxRummyClient:
             last_names = ["Kumar", "Sharma", "Verma", "Singh", "Patel", "Gupta", "Yadav", "Chauhan", "Mishra", "Joshi"]
             name = f"{random.choice(first_names)} {random.choice(last_names)}"
 
-        if not invite_code:
-            invite_code = self.invite_code
+        # Do not default to stale platforms.json invite codes; use empty if not explicitly provided
+        clean_invite = invite_code.strip() if invite_code else ""
 
         now = int(time.time() * 1000)
         x_sign = hashlib.md5(f"{now}{self.auth_salt}".encode()).hexdigest()
-        # Android device ID: 16-character lowercase hex string
-        device_id = hashlib.md5(f"device_{clean_phone}_{self.platform_id}".encode()).hexdigest()[:16]
+        # Fresh Android 16-character hex device ID per registration session
+        device_id = secrets.token_hex(8)
 
         is_wss = 1 if self.login_ws_uri.startswith("wss://") else 0
         reg_req = {
@@ -522,7 +524,7 @@ class MaxRummyClient:
             "device": "Xiaomi(13)",
             "code": "",
             "token": str(otp).strip(),
-            "reccode": invite_code or "",
+            "reccode": clean_invite,
             "bwss": is_wss,
             "LoginExData": "mb_reg",
             "language": 2,
@@ -534,6 +536,7 @@ class MaxRummyClient:
         }
 
         try:
+            print("🔍 EXACT REG_REQ SENT:", json.dumps(reg_req, indent=2))
             async with await self._ws_connect(self.login_ws_uri) as ws:
                 pkt = pack_packet(reg_req, now)
                 await ws.send(pkt)
